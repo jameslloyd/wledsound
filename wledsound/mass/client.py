@@ -25,12 +25,14 @@ class MusicAssistantClient:
         server_url: str = "http://127.0.0.1:8095",
         player_id: Optional[str] = None,
         token: Optional[str] = None,
-        palette_extractor: Optional[PaletteExtractor] = None
+        palette_extractor: Optional[PaletteExtractor] = None,
+        auto_group_player_id: Optional[str] = None
     ):
         self.server_url = server_url.rstrip("/")
         self.target_player_id = player_id
         self.token = token.strip() if token else None
         self.palette_extractor = palette_extractor or PaletteExtractor()
+        self.auto_group_player_id = auto_group_player_id
 
         self.current_track = TrackInfo()
         self._running = False
@@ -166,6 +168,19 @@ class MusicAssistantClient:
         state = str(getattr(player, "playback_state", "")).lower()
         player_id = getattr(player, "player_id", "")
 
+        # If this player is our own audio sink or synced to a leader, resolve metadata from leader
+        synced_to = getattr(player, "synced_to", None)
+        if synced_to and (player_id == self.auto_group_player_id or not getattr(player, "current_media", None)):
+            leader = client.players.get(synced_to)
+            if leader:
+                player = leader
+                state = str(getattr(player, "playback_state", "")).lower()
+                player_id = getattr(player, "player_id", "")
+
+        # Never let our own sink player override the metadata if not synced
+        if self.auto_group_player_id and player_id == self.auto_group_player_id:
+            return
+
         # If auto-tracking across multiple players, prioritize the currently active playing player
         if not self.target_player_id:
             if state != "playing" and self._active_playing_player_id and self._active_playing_player_id != player_id:
@@ -174,6 +189,17 @@ class MusicAssistantClient:
                     return
             if state == "playing":
                 self._active_playing_player_id = player_id
+
+        # Auto-group Squeezelite player (e.g. WLEDSound) with the active playing player if supported
+        if self.auto_group_player_id and state == "playing" and player_id != self.auto_group_player_id:
+            try:
+                can_group = getattr(player, "can_group_with", set()) or set()
+                group_members = getattr(player, "group_members", []) or []
+                if self.auto_group_player_id in can_group and self.auto_group_player_id not in group_members:
+                    logger.info(f"Auto-grouping {self.auto_group_player_id} with playing player {getattr(player, 'name', player_id)}")
+                    asyncio.create_task(client.players.player_command_group(self.auto_group_player_id, player_id))
+            except Exception as e:
+                logger.debug(f"Auto-group check failed: {e}")
 
         current_media = getattr(player, "current_media", None)
         title = "Unknown Title"

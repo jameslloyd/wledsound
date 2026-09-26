@@ -7,15 +7,15 @@ import signal
 import asyncio
 import logging
 import uvicorn
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, load_config, save_config, WLEDDeviceConfig, WLEDSegmentConfig
 from .audio.types import AudioFeatures, TrackInfo
 from .audio.dsp import AudioDSP
 from .audio.capture import AudioCapture
 from .wled.audiosync import AudioSyncSender
 from .wled.ddp import DDPClient
-from .wled.effects import VisualizerEngine
+from .wled.effects import VisualizerEngine, get_palette_definitions, BUILTIN_PALETTES, AVAILABLE_EFFECTS
 from .wled.client import WLEDClient
 from .mass.client import MusicAssistantClient
 from .mass.palette import PaletteExtractor
@@ -76,20 +76,36 @@ class ServiceCoordinator:
         )
         self.visualizer = VisualizerEngine(
             led_count=self.config.wled.led_count,
-            effect_name=self.config.wled.ddp_effect
+            effect_name=self.config.wled.ddp_effect,
+            palette_name=self.config.wled.palette
         )
-        # WLED HTTP Clients (primary host)
+        # WLED HTTP Clients (all devices + wled_hosts)
+        self.wled_clients: Dict[str, WLEDClient] = {}
+        all_hosts = set(self.config.wled.wled_hosts)
+        for dev in self.config.wled.devices:
+            all_hosts.add(dev.ip)
+        for host in all_hosts:
+            if host and host != "239.0.0.1":
+                self.wled_clients[host] = WLEDClient(host)
         primary_host = self.config.wled.wled_hosts[0] if self.config.wled.wled_hosts else None
-        self.wled_client = WLEDClient(primary_host) if primary_host else None
+        if not primary_host and self.wled_clients:
+            primary_host = next(iter(self.wled_clients.keys()))
+        self.wled_client = self.wled_clients.get(primary_host) if primary_host else None
 
     def _init_mass(self) -> None:
         self.palette_extractor = PaletteExtractor()
         if self.config.music_assistant.enabled:
+            auto_group_id = (
+                self.config.audio.squeezelite_mac
+                if (self.config.audio.mode == "squeezelite" and self.config.audio.auto_group)
+                else None
+            )
             self.mass_client = MusicAssistantClient(
                 server_url=self.config.music_assistant.server_url,
                 player_id=self.config.music_assistant.player_id,
                 token=self.config.music_assistant.token,
-                palette_extractor=self.palette_extractor
+                palette_extractor=self.palette_extractor,
+                auto_group_player_id=auto_group_id
             )
             self.mass_client.set_callbacks(
                 on_track_changed=self._on_track_changed,
@@ -101,6 +117,10 @@ class ServiceCoordinator:
     def _init_capture(self) -> None:
         self.capture = AudioCapture(
             mode=self.config.audio.mode,
+            squeezelite_host=self.config.audio.squeezelite_host,
+            squeezelite_port=self.config.audio.squeezelite_port,
+            player_name=self.config.audio.squeezelite_player_name,
+            mac_address=self.config.audio.squeezelite_mac,
             snapserver_host=self.config.audio.snapserver_host,
             snapserver_port=self.config.audio.snapserver_port,
             fifo_path=self.config.audio.fifo_path,
@@ -118,6 +138,7 @@ class ServiceCoordinator:
             and self.current_track.state
             and self.current_track.state not in ("", "offline", "unauthenticated")
         )
+        active_palette = self.visualizer.get_palette(self.current_track.palette)
         return {
             "bands": features.fft_result,
             "sample_raw": round(features.sample_raw, 1),
@@ -128,6 +149,11 @@ class ServiceCoordinator:
             "waveform": features.waveform_preview,
             "mass_connected": mass_online,
             "audio_active": (time.perf_counter() - self._last_audio_chunk_time < 1.0),
+            "palette_mode": self.visualizer.palette_name,
+            "active_palette": [list(c) for c in active_palette],
+            "available_palettes": get_palette_definitions(),
+            "available_effects": AVAILABLE_EFFECTS,
+            "devices": [d.model_dump() for d in self.config.wled.devices],
             "track": {
                 "title": self.current_track.title,
                 "artist": self.current_track.artist,
@@ -159,9 +185,18 @@ class ServiceCoordinator:
             self.audiosync.send_features(features)
 
         # 3. DDP Real-time Pixel Streaming (if hybrid or ddp mode)
-        if mode in ("hybrid", "ddp") and self.config.wled.ddp_targets:
-            pixels = self.visualizer.render(features, self.current_track)
-            self.ddp.send_frame(pixels)
+        if mode in ("hybrid", "ddp"):
+            active_palette = self.visualizer.get_palette(self.current_track.palette)
+            if self.config.wled.devices:
+                for dev in self.config.wled.devices:
+                    if dev.ddp_enabled:
+                        pixels = self.visualizer.render_device(
+                            dev, features, self.current_track, active_palette
+                        )
+                        self.ddp.send_frame(pixels, target_ip=dev.ip)
+            elif self.config.wled.ddp_targets:
+                pixels = self.visualizer.render(features, self.current_track)
+                self.ddp.send_frame(pixels)
 
         # 4. Web Telemetry Broadcast (~30-50 fps limit)
         now = time.perf_counter()
@@ -177,24 +212,27 @@ class ServiceCoordinator:
         # Broadcast update to web visualizer immediately
         self._broadcast_frame(self.get_telemetry_frame())
 
-        # Sync palette to WLED segment colors if enabled
-        if self.config.wled.sync_album_art_colors and self.wled_client and track.palette:
-            if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self.wled_client.set_segment_colors(track.palette), self._loop
-                )
+        # Sync palette to WLED segment colors if enabled and using dynamic album art
+        if self.config.wled.sync_album_art_colors and self.wled_clients:
+            if self.visualizer.palette_name == "album_art" and track.palette:
+                if self._loop and self._loop.is_running():
+                    for client in self.wled_clients.values():
+                        asyncio.run_coroutine_threadsafe(
+                            client.set_segment_colors(track.palette), self._loop
+                        )
 
     def _on_playback_state_changed(self, state: str) -> None:
         """Invoked when Music Assistant playback state changes."""
         logger.info(f"Playback state changed to: {state}")
         self._broadcast_frame(self.get_telemetry_frame())
 
-        if not self.config.wled.auto_power or not self.wled_client:
+        if not self.config.wled.auto_power or not self.wled_clients:
             return
 
         if self._loop and self._loop.is_running():
             if state == "playing":
-                asyncio.run_coroutine_threadsafe(self.wled_client.set_power(True), self._loop)
+                for client in self.wled_clients.values():
+                    asyncio.run_coroutine_threadsafe(client.set_power(True), self._loop)
             elif state in ("paused", "idle", "stopped"):
                 logger.info("Music paused/stopped; maintaining idle state")
 
@@ -204,37 +242,139 @@ class ServiceCoordinator:
             await asyncio.sleep(0.5)
             # If no audio chunks received in the last 0.5s, send idle telemetry frame
             if time.perf_counter() - self._last_audio_chunk_time >= 0.4:
+                self.current_features.sample_peak = 0
                 frame = self.get_telemetry_frame()
                 if self._telemetry_broadcaster:
                     await self._telemetry_broadcaster(frame)
 
     async def toggle_wled_power(self) -> bool:
-        """Toggles WLED power on/off."""
-        if not self.wled_client:
+        """Toggles WLED power on/off across all configured devices."""
+        if not self.wled_clients:
             return False
-        state = await self.wled_client.get_state()
-        if state:
-            current_on = state.get("on", False)
-            return await self.wled_client.set_power(not current_on)
-        return False
+        current_state = await self.wled_client.get_state() if self.wled_client else None
+        is_on = current_state.get("on", False) if current_state else True
+        new_state = not is_on
+        results = await asyncio.gather(
+            *[client.set_power(new_state) for client in self.wled_clients.values()],
+            return_exceptions=True
+        )
+        return any(r is True for r in results)
 
     def trigger_test_flash(self) -> None:
         """Triggers an instantaneous visual test pulse."""
-        self.current_features.sample_peak = 1
-        self.current_features.sample_raw = 255.0
-        self.current_features.sample_smth = 200.0
+        flash_features = AudioFeatures(
+            sample_raw=255.0,
+            sample_smth=220.0,
+            sample_peak=1,
+            fft_result=[220, 240, 255, 200, 180, 160, 140, 120, 100, 80, 60, 50, 40, 30, 20, 10],
+            fft_magnitude=1.0,
+            fft_major_peak=120.0,
+            rms_energy=0.85,
+            waveform_preview=[0.8, -0.8] * 16
+        )
 
         if self.config.wled.mode in ("hybrid", "audiosync"):
-            self.audiosync.send_features(self.current_features)
+            self.audiosync.send_features(flash_features)
         if self.config.wled.mode in ("hybrid", "ddp") and self.config.wled.ddp_targets:
             pixels = [(255, 255, 255)] * self.config.wled.led_count
             self.ddp.send_frame(pixels)
 
+        # Broadcast one-off flash frame to web clients
+        frame = self.get_telemetry_frame()
+        frame["sample_peak"] = 1
+        frame["sample_raw"] = 255.0
+        frame["bands"] = flash_features.fft_result
+        self._broadcast_frame(frame)
+
     async def sync_palette_to_wled(self) -> bool:
-        """Pushes current palette to WLED hardware."""
-        if self.wled_client and self.current_track.palette:
-            return await self.wled_client.set_segment_colors(self.current_track.palette)
+        """Pushes current active palette to all WLED devices."""
+        if not self.wled_clients:
+            return False
+        palette = self.visualizer.get_palette(self.current_track.palette)
+        results = await asyncio.gather(
+            *[client.set_segment_colors(palette) for client in self.wled_clients.values()],
+            return_exceptions=True
+        )
+        return any(r is True for r in results)
+
+    def set_palette(self, palette_name: str) -> None:
+        """Sets active color palette, notifies visualizer, saves config, and pushes to WLED."""
+        palette_name = palette_name.lower()
+        self.config.wled.palette = palette_name
+        self.visualizer.set_palette(palette_name)
+        logger.info(f"Switched palette to: {palette_name}")
+        self._broadcast_frame(self.get_telemetry_frame())
+        save_config(self.config, self.config_path)
+
+        if self.config.wled.sync_album_art_colors and self.wled_clients:
+            if self._loop and self._loop.is_running():
+                palette = self.visualizer.get_palette(self.current_track.palette)
+                for client in self.wled_clients.values():
+                    asyncio.run_coroutine_threadsafe(
+                        client.set_segment_colors(palette), self._loop
+                    )
+
+    def get_devices(self) -> List[Dict[str, Any]]:
+        """Returns list of configured devices with segments."""
+        return [d.model_dump() for d in self.config.wled.devices]
+
+    async def discover_devices(self) -> List[Dict[str, Any]]:
+        """Queries configured hosts to auto-discover WLED device info and segments."""
+        all_hosts = list(dict.fromkeys(
+            self.config.wled.wled_hosts + [d.ip for d in self.config.wled.devices] + self.config.wled.ddp_targets
+        ))
+        discovered = []
+        for host in all_hosts:
+            if not host or host == "239.0.0.1":
+                continue
+            client = self.wled_clients.get(host) or WLEDClient(host)
+            self.wled_clients[host] = client
+            dev_dict = await client.detect_device_config()
+            if dev_dict:
+                existing_dev = next((d for d in self.config.wled.devices if d.ip == host), None)
+                if existing_dev:
+                    existing_segs = {s.id: s for s in existing_dev.segments}
+                    for seg_dict in dev_dict["segments"]:
+                        if seg_dict["id"] in existing_segs:
+                            prev = existing_segs[seg_dict["id"]]
+                            seg_dict["effect"] = prev.effect
+                            seg_dict["reverse"] = prev.reverse
+                            seg_dict["mirror"] = prev.mirror
+                            seg_dict["brightness"] = prev.brightness
+                            seg_dict["palette"] = prev.palette
+                discovered.append(WLEDDeviceConfig(**dev_dict))
+
+        if discovered:
+            self.config.wled.devices = discovered
+            for d in discovered:
+                if d.ip not in self.config.wled.wled_hosts:
+                    self.config.wled.wled_hosts.append(d.ip)
+                if d.ddp_enabled and d.ip not in self.config.wled.ddp_targets:
+                    self.config.wled.ddp_targets.append(d.ip)
+            save_config(self.config, self.config_path)
+            self._broadcast_frame(self.get_telemetry_frame())
+
+        return [d.model_dump() for d in self.config.wled.devices]
+
+    def update_segment(self, device_ip: str, segment_id: int, patch: Dict[str, Any]) -> bool:
+        """Updates a specific segment on a WLED device."""
+        for dev in self.config.wled.devices:
+            if dev.ip == device_ip:
+                for seg in dev.segments:
+                    if seg.id == segment_id:
+                        for k, v in patch.items():
+                            if hasattr(seg, k):
+                                setattr(seg, k, v)
+                        save_config(self.config, self.config_path)
+                        self._broadcast_frame(self.get_telemetry_frame())
+                        return True
         return False
+
+    def update_devices_config(self, devices_data: List[Dict[str, Any]]) -> None:
+        """Overwrites devices configuration with new data."""
+        self.config.wled.devices = [WLEDDeviceConfig(**d) for d in devices_data]
+        save_config(self.config, self.config_path)
+        self._broadcast_frame(self.get_telemetry_frame())
 
     def apply_config_patch(self, patch: Dict[str, Any]) -> None:
         """Applies dynamic runtime configuration updates from API."""
@@ -258,6 +398,10 @@ class ServiceCoordinator:
                     setattr(self.config.wled, k, v)
             self.visualizer.set_effect(self.config.wled.ddp_effect)
             self.visualizer.set_led_count(self.config.wled.led_count)
+            if "palette" in patch["wled"]:
+                self.set_palette(patch["wled"]["palette"])
+            if "devices" in patch["wled"]:
+                self.update_devices_config(patch["wled"]["devices"])
 
         # Save updated config
         save_config(self.config, self.config_path)
@@ -277,7 +421,11 @@ class ServiceCoordinator:
                 "audiosync_targets": self.config.wled.audiosync_targets,
                 "ddp_targets": self.config.wled.ddp_targets,
                 "led_count": self.config.wled.led_count,
-                "effect": self.config.wled.ddp_effect
+                "effect": self.config.wled.ddp_effect,
+                "palette": self.config.wled.palette,
+                "devices": [d.model_dump() for d in self.config.wled.devices],
+                "available_effects": AVAILABLE_EFFECTS,
+                "available_palettes": get_palette_definitions()
             },
             "music_assistant": {
                 "enabled": self.config.music_assistant.enabled,

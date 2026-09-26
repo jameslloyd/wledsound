@@ -11,5 +11,6 @@ services:
       - "4048:4048/udp"      # WLED DDP
     volumes:
       - ./config:/config
+      - ./wledsound:/app/wledsound
     environment:
       - TZ=UTC

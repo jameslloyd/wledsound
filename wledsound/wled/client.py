@@ -56,12 +56,12 @@ class WLEDClient:
         bri = max(0, min(255, bri))
         return await self._post_state({"bri": bri})
 
-    async def set_segment_colors(self, colors: List[Tuple[int, int, int]], segment_id: int = 0) -> bool:
+    async def set_segment_colors(self, colors: List[Tuple[int, int, int]], segment_id: Optional[int] = None) -> bool:
         """Pushes album art colors to WLED segment primary, secondary, and tertiary colors.
         
         Args:
             colors: List of up to 3 RGB tuples [(r, g, b), ...]
-            segment_id: Target segment index (defaults to 0).
+            segment_id: Target segment index, or None to update all active segments.
         """
         if not colors:
             return False
@@ -71,17 +71,58 @@ class WLEDClient:
         while len(col_list) < 3:
             col_list.append([0, 0, 0])
 
-        payload = {
-            "seg": [{
-                "id": segment_id,
-                "col": col_list
-            }]
-        }
+        if segment_id is not None:
+            payload = {"seg": [{"id": segment_id, "col": col_list}]}
+        else:
+            # Apply to all active segments on the device
+            state = await self.get_state()
+            seg_list = []
+            if state and "seg" in state and isinstance(state["seg"], list):
+                for s in state["seg"]:
+                    if s.get("on", True) is not False:
+                        seg_list.append({"id": s["id"], "col": col_list})
+            if not seg_list:
+                seg_list = [{"id": 0, "col": col_list}]
+            payload = {"seg": seg_list}
+
         return await self._post_state(payload)
 
     async def set_preset(self, preset_id: int) -> bool:
         """Loads a WLED preset by ID."""
         return await self._post_state({"ps": preset_id})
+
+    async def detect_device_config(self) -> Optional[Dict[str, Any]]:
+        """Queries WLED device to auto-discover name, led count, and segments."""
+        info = await self.get_info()
+        state = await self.get_state()
+        if not info or not state:
+            return None
+
+        dev_name = info.get("name", self.host)
+        led_count = info.get("leds", {}).get("count", 60)
+        segments_raw = state.get("seg", [])
+
+        segments = []
+        for s in segments_raw:
+            segments.append({
+                "id": s.get("id", len(segments)),
+                "name": s.get("n", f"Segment {s.get('id', len(segments))}"),
+                "start": s.get("start", 0),
+                "stop": s.get("stop", led_count),
+                "effect": "album_pulse",
+                "reverse": s.get("rev", False),
+                "mirror": s.get("mi", False),
+                "brightness": 1.0,
+                "palette": None
+            })
+
+        return {
+            "ip": self.host,
+            "name": dev_name,
+            "led_count": led_count,
+            "ddp_enabled": True,
+            "segments": segments
+        }
 
     async def enable_udp_sync(self, receive: bool = True) -> bool:
         """Ensures WLED UDP Sync receive is active."""

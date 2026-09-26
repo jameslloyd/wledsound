@@ -14,11 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class AudioCapture:
-    """Manages audio ingestion from snapclient subprocess, named pipe FIFO, or test generator."""
+    """Manages audio ingestion from squeezelite subprocess, snapclient, named pipe FIFO, or test generator."""
 
     def __init__(
         self,
-        mode: str = "snapclient",
+        mode: str = "squeezelite",
+        squeezelite_host: str = "127.0.0.1",
+        squeezelite_port: int = 3483,
+        player_name: str = "WLEDSound",
+        mac_address: str = "de:47:2d:67:f3:af",
         snapserver_host: str = "127.0.0.1",
         snapserver_port: int = 1704,
         fifo_path: str = "/tmp/snapfifo",
@@ -27,6 +31,10 @@ class AudioCapture:
         frame_duration_ms: int = 20,
     ):
         self.mode = mode.lower()
+        self.squeezelite_host = squeezelite_host
+        self.squeezelite_port = squeezelite_port
+        self.player_name = player_name
+        self.mac_address = mac_address
         self.snapserver_host = snapserver_host
         self.snapserver_port = snapserver_port
         self.fifo_path = fifo_path
@@ -75,7 +83,9 @@ class AudioCapture:
         """Main background loop directing to specific capture modes."""
         while self._running:
             try:
-                if self.mode == "snapclient":
+                if self.mode == "squeezelite":
+                    self._run_squeezelite()
+                elif self.mode == "snapclient":
                     self._run_snapclient()
                 elif self.mode == "fifo":
                     self._run_fifo()
@@ -87,6 +97,53 @@ class AudioCapture:
             except Exception as e:
                 logger.error(f"Error in audio capture loop: {e}", exc_info=True)
                 time.sleep(1.0)
+
+    def _run_squeezelite(self) -> None:
+        """Launches squeezelite and streams PCM bytes from its stdout."""
+        cmd = [
+            "squeezelite",
+            "-s", f"{self.squeezelite_host}:{self.squeezelite_port}",
+            "-n", self.player_name,
+            "-m", self.mac_address,
+            "-o", "-",
+            "-a", "16",
+            "-b", "2048:3445",
+            "-f", "/tmp/squeezelite.log",
+            "-d", "all=info"
+        ]
+        logger.info(f"Spawning squeezelite: {' '.join(cmd)}")
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=self.bytes_per_frame * 4
+            )
+        except FileNotFoundError:
+            logger.error("squeezelite binary not found in PATH! Falling back to synthetic test generator.")
+            self.mode = "test"
+            return
+
+        frame_interval = self.frame_duration_ms / 1000.0
+        while self._running and self._process.poll() is None:
+            if not self._process.stdout:
+                break
+            start_t = time.perf_counter()
+            raw_chunk = self._process.stdout.read(self.bytes_per_frame)
+            if not raw_chunk:
+                break
+            if len(raw_chunk) == self.bytes_per_frame and self._callback:
+                self._callback(raw_chunk)
+
+            # Pace reads at real-time rate (20ms) because stdout pipe has no hardware DAC clock
+            elapsed = time.perf_counter() - start_t
+            sleep_time = frame_interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        if self._process:
+            logger.warning(f"squeezelite exited with code {self._process.returncode}. Reconnecting in 2s...")
+            time.sleep(2.0)
 
     def _run_snapclient(self) -> None:
         """Launches snapclient and streams PCM bytes from its stdout."""

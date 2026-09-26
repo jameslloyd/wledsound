@@ -10,9 +10,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Install system dependencies including snapclient
+# Install system dependencies including snapclient and squeezelite
 RUN apt-get update && apt-get install -y --no-install-recommends \
     snapclient \
+    squeezelite \
     libasound2 \
     curl \
     && rm -rf /var/lib/apt/lists/*

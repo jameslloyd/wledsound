@@ -10,7 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 class AudioSettings(BaseModel):
-    mode: str = Field(default="snapclient", description="Audio capture mode: 'snapclient', 'fifo', or 'test'")
+    mode: str = Field(default="squeezelite", description="Audio capture mode: 'squeezelite', 'snapclient', 'fifo', or 'test'")
+    squeezelite_host: str = Field(default="127.0.0.1", description="Squeezelite / Slimproto server host")
+    squeezelite_port: int = Field(default=3483, description="Squeezelite / Slimproto server port")
+    squeezelite_player_name: str = Field(default="WLEDSound", description="Player name registered in Music Assistant")
+    squeezelite_mac: str = Field(default="de:47:2d:67:f3:af", description="MAC address for Squeezelite player")
+    auto_group: bool = Field(default=True, description="Automatically sync/group WLEDSound with active playing player")
     snapserver_host: str = Field(default="127.0.0.1", description="Snapserver hostname or IP")
     snapserver_port: int = Field(default=1704, description="Snapserver stream port")
     fifo_path: str = Field(default="/tmp/snapfifo", description="Named pipe path if using FIFO mode")
@@ -19,6 +24,32 @@ class AudioSettings(BaseModel):
     squelch: float = Field(default=0.005, description="Silence/noise floor threshold (0.0 - 0.1)")
     agc_enabled: bool = Field(default=True, description="Automatic Gain Control")
     smoothing: float = Field(default=0.25, description="Audio level smoothing factor (0.05 - 0.9)")
+
+
+class WLEDSegmentConfig(BaseModel):
+    id: int = Field(default=0, description="WLED Segment ID")
+    name: str = Field(default="Segment", description="Segment name (e.g. Top Cabinet)")
+    start: int = Field(default=0, description="Start LED index (0-indexed)")
+    stop: int = Field(default=60, description="Stop LED index (exclusive)")
+    effect: str = Field(
+        default="album_pulse",
+        description="Effect for this segment: album_pulse, geq_spectrum, energy_wave, vu_meter, beat_flash, solid, off"
+    )
+    reverse: bool = Field(default=False, description="Reverse effect animation direction")
+    mirror: bool = Field(default=False, description="Mirror animation from segment center")
+    brightness: float = Field(default=1.0, description="Relative segment brightness multiplier (0.0 - 1.0)")
+    palette: Optional[str] = Field(default=None, description="Optional custom palette override, or None to inherit master")
+
+
+class WLEDDeviceConfig(BaseModel):
+    ip: str = Field(description="WLED device IP address")
+    name: str = Field(default="", description="Device friendly name (e.g. Kitchen1)")
+    led_count: int = Field(default=60, description="Total LED count on this device")
+    ddp_enabled: bool = Field(default=True, description="Enable real-time DDP streaming to this device")
+    segments: List[WLEDSegmentConfig] = Field(
+        default_factory=list,
+        description="Configured segments on this device"
+    )
 
 
 class WLEDSettings(BaseModel):
@@ -45,6 +76,11 @@ class WLEDSettings(BaseModel):
     )
     auto_power: bool = Field(default=True, description="Turn WLED on when music plays, turn off/idle when paused")
     sync_album_art_colors: bool = Field(default=True, description="Push album art palette to WLED segment colors")
+    palette: str = Field(default="album_art", description="Color palette: 'album_art', 'cyberpunk', 'sunset', 'vaporwave', 'aurora', 'magma', 'forest', 'glacial', 'rainbow', 'candle'")
+    devices: List[WLEDDeviceConfig] = Field(
+        default_factory=list,
+        description="Per-device configurations with individual segment definitions and effects"
+    )
 
 
 class MusicAssistantSettings(BaseModel):

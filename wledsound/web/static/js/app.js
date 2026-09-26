@@ -37,6 +37,10 @@
   const albumBackdropEl = document.getElementById('albumBackdrop');
   const statePillEl = document.getElementById('playbackStatePill');
   const paletteSwatchesEl = document.getElementById('paletteSwatches');
+  const activePaletteLabelEl = document.getElementById('activePaletteLabel');
+  const paletteSourceLabelEl = document.getElementById('paletteSourceLabel');
+  const devicesListEl = document.getElementById('devicesList');
+  const btnSyncWledSegments = document.getElementById('btnSyncWledSegments');
 
   const gainSlider = document.getElementById('gainSlider');
   const gainVal = document.getElementById('gainVal');
@@ -127,9 +131,19 @@
       snapcastBadge.classList.toggle('online', !!data.audio_active);
     }
 
-    // Metadata & palette updates
+    // Palette selection & active swatches
+    if (data.palette_mode !== undefined) {
+      updateActivePaletteUI(data.palette_mode, data.active_palette);
+    }
+
+    // WLED Devices & Segments
+    if (data.devices) {
+      renderDevicesList(data.devices, data.available_effects);
+    }
+
+    // Metadata & track updates
     if (data.track) {
-      updateNowPlaying(data.track);
+      updateNowPlaying(data.track, data.palette_mode);
     }
   }
 
@@ -144,9 +158,38 @@
     }, 120);
   }
 
+  // Active palette UI state
+  let currentPaletteMode = 'album_art';
+  function updateActivePaletteUI(paletteMode, activePalette) {
+    currentPaletteMode = paletteMode;
+    const paletteCards = document.querySelectorAll('.palette-card');
+    paletteCards.forEach(c => {
+      const isCardActive = (c.dataset.palette === paletteMode);
+      c.classList.toggle('active', isCardActive);
+      if (isCardActive && activePaletteLabelEl) {
+        const nameEl = c.querySelector('.palette-card-name');
+        activePaletteLabelEl.textContent = nameEl ? nameEl.textContent : paletteMode;
+      }
+    });
+
+    if (paletteSourceLabelEl) {
+      if (paletteMode === 'album_art') {
+        paletteSourceLabelEl.textContent = 'Active Artwork Palette (Auto)';
+      } else {
+        const matched = Array.from(paletteCards).find(c => c.dataset.palette === paletteMode);
+        const name = matched ? (matched.querySelector('.palette-card-name')?.textContent || paletteMode) : paletteMode;
+        paletteSourceLabelEl.textContent = `Preset Palette: ${name}`;
+      }
+    }
+
+    if (activePalette && activePalette.length > 0) {
+      updatePalette(activePalette);
+    }
+  }
+
   // Update Now Playing UI & Palette
   let lastTrackHash = '';
-  function updateNowPlaying(track) {
+  function updateNowPlaying(track, paletteMode) {
     const hash = `${track.title}-${track.artist}-${track.state}-${track.image_url}`;
     if (hash === lastTrackHash) return;
     lastTrackHash = hash;
@@ -170,6 +213,13 @@
       }
     }
 
+    // Update Album Cover preview card bar in palette selector
+    const albumBar = document.querySelector('#btnPaletteAlbumArt .palette-card-bar');
+    if (albumBar && track.palette && track.palette.length >= 2) {
+      const stops = track.palette.map(c => rgbToHex(c[0], c[1], c[2])).join(', ');
+      albumBar.style.background = `linear-gradient(90deg, ${stops})`;
+    }
+
     // Connection badge for MA
     if (massBadge) {
       if (track.state && track.state !== 'offline') {
@@ -179,14 +229,20 @@
       }
     }
 
-    // Dynamic color palette swatches & CSS variables
-    if (track.palette && track.palette.length > 0) {
+    // Dynamic color palette swatches & CSS variables (if on album_art mode)
+    const mode = paletteMode || currentPaletteMode;
+    if (mode === 'album_art' && track.palette && track.palette.length > 0) {
       updatePalette(track.palette);
     }
   }
 
+  let lastPaletteJson = '';
   function updatePalette(palette) {
-    if (!paletteSwatchesEl) return;
+    if (!paletteSwatchesEl || !palette || palette.length === 0) return;
+    const pJson = JSON.stringify(palette);
+    if (pJson === lastPaletteJson) return;
+    lastPaletteJson = pJson;
+
     paletteSwatchesEl.innerHTML = '';
 
     palette.forEach((color, i) => {
@@ -200,7 +256,7 @@
       const swatch = document.createElement('div');
       swatch.className = 'palette-swatch';
       swatch.style.backgroundColor = hex;
-      swatch.title = `Color ${i + 1}: ${hex}`;
+      swatch.title = `Color ${i + 1}: ${hex} (click to copy)`;
       swatch.addEventListener('click', () => {
         navigator.clipboard.writeText(hex);
         swatch.style.transform = 'scale(0.9)';
@@ -414,6 +470,49 @@
       });
     }
 
+    // Palette Card Selection Buttons
+    const paletteCards = document.querySelectorAll('.palette-card');
+    paletteCards.forEach(card => {
+      card.addEventListener('click', async () => {
+        const paletteId = card.dataset.palette;
+        paletteCards.forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        if (activePaletteLabelEl) {
+          const nameEl = card.querySelector('.palette-card-name');
+          activePaletteLabelEl.textContent = nameEl ? nameEl.textContent : paletteId;
+        }
+        try {
+          await fetch(`/api/wled/palette/${paletteId}`, { method: 'POST' });
+        } catch (e) {
+          console.error('Failed to set palette:', e);
+        }
+      });
+    });
+
+    // Sync Segments from WLED Hardware
+    if (btnSyncWledSegments) {
+      btnSyncWledSegments.addEventListener('click', async () => {
+        btnSyncWledSegments.disabled = true;
+        const origHtml = btnSyncWledSegments.innerHTML;
+        btnSyncWledSegments.innerHTML = `Scanning...`;
+        try {
+          const resp = await fetch('/api/wled/devices/discover', { method: 'POST' });
+          if (resp.ok) {
+            const result = await resp.json();
+            if (result.devices) {
+              lastDevicesJson = '';
+              renderDevicesList(result.devices);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to discover WLED devices:', e);
+        } finally {
+          btnSyncWledSegments.disabled = false;
+          btnSyncWledSegments.innerHTML = origHtml;
+        }
+      });
+    }
+
     // Quick Action: Sync Palette Now
     const btnSyncPalette = document.getElementById('btnSyncPalette');
     if (btnSyncPalette) {
@@ -424,6 +523,175 @@
           console.error(e);
         }
       });
+    }
+  }
+
+  // WLED Devices & Segments Rendering
+  let lastDevicesJson = '';
+  let availableEffects = [
+    { id: 'album_pulse', name: 'Album Pulse' },
+    { id: 'geq_spectrum', name: '16-Band GEQ' },
+    { id: 'energy_wave', name: 'Energy Wave' },
+    { id: 'vu_meter', name: 'VU Meter' },
+    { id: 'beat_flash', name: 'Beat Drop Flash' },
+    { id: 'solid', name: 'Solid Ambient' },
+    { id: 'off', name: 'Off (Dark)' }
+  ];
+
+  function renderDevicesList(devices, effects) {
+    if (!devicesListEl || !devices) return;
+    if (effects && effects.length > 0) {
+      availableEffects = effects;
+    }
+    const currentJson = JSON.stringify(devices);
+    if (currentJson === lastDevicesJson && devicesListEl.children.length > 0) return;
+    lastDevicesJson = currentJson;
+
+    devicesListEl.innerHTML = '';
+
+    if (devices.length === 0) {
+      devicesListEl.innerHTML = '<div style="font-size: 12px; color: var(--color-text-dim); padding: 10px 0;">No devices detected yet. Click "Sync from WLED" above to discover.</div>';
+      return;
+    }
+
+    devices.forEach(dev => {
+      const card = document.createElement('div');
+      card.className = 'device-card';
+      card.dataset.ip = dev.ip;
+
+      const header = document.createElement('div');
+      header.className = 'device-header';
+      header.innerHTML = `
+        <div class="device-info">
+          <span class="device-name">${dev.name || 'WLED Device'}</span>
+          <span class="device-badge">${dev.ip}</span>
+          <span class="device-badge leds">${dev.led_count} LEDs</span>
+        </div>
+        <div class="device-toggles">
+          <label class="toggle-label" title="Enable or disable real-time DDP streaming to this device">
+            <input type="checkbox" class="dev-ddp-toggle" data-ip="${dev.ip}" ${dev.ddp_enabled ? 'checked' : ''}>
+            <span>DDP Stream</span>
+          </label>
+        </div>
+      `;
+
+      const ddpToggle = header.querySelector('.dev-ddp-toggle');
+      ddpToggle.addEventListener('change', async (e) => {
+        dev.ddp_enabled = e.target.checked;
+        await saveDevicesConfig(devices);
+      });
+
+      card.appendChild(header);
+
+      const segmentsContainer = document.createElement('div');
+      segmentsContainer.className = 'device-segments';
+
+      (dev.segments || []).forEach(seg => {
+        const segLen = (seg.stop || dev.led_count) - (seg.start || 0);
+        const row = document.createElement('div');
+        row.className = 'segment-row';
+        row.dataset.segId = seg.id;
+
+        const meta = document.createElement('div');
+        meta.className = 'seg-meta';
+        meta.innerHTML = `
+          <div class="seg-title">
+            <span class="seg-num">#${seg.id}</span>
+            <span class="seg-name">${seg.name || `Segment ${seg.id}`}</span>
+          </div>
+          <span class="seg-range">LEDs ${seg.start} – ${seg.stop} (${segLen} px)</span>
+        `;
+        row.appendChild(meta);
+
+        const controls = document.createElement('div');
+        controls.className = 'seg-controls';
+
+        const selectWrap = document.createElement('div');
+        selectWrap.className = 'seg-effect-select-wrapper';
+        selectWrap.innerHTML = `<label class="seg-field-label">Effect:</label>`;
+
+        const select = document.createElement('select');
+        select.className = 'seg-effect-select';
+        select.dataset.ip = dev.ip;
+        select.dataset.segId = seg.id;
+
+        availableEffects.forEach(eff => {
+          const opt = document.createElement('option');
+          opt.value = eff.id;
+          opt.textContent = eff.name;
+          if (seg.effect === eff.id) {
+            opt.selected = true;
+          }
+          select.appendChild(opt);
+        });
+
+        select.addEventListener('change', async (e) => {
+          const newEffect = e.target.value;
+          seg.effect = newEffect;
+          await updateSegmentSetting(dev.ip, seg.id, { effect: newEffect });
+        });
+        selectWrap.appendChild(select);
+        controls.appendChild(selectWrap);
+
+        const toggles = document.createElement('div');
+        toggles.className = 'seg-toggles';
+
+        const revBtn = document.createElement('button');
+        revBtn.type = 'button';
+        revBtn.className = `chip-toggle ${seg.reverse ? 'active' : ''}`;
+        revBtn.title = 'Reverse animation direction';
+        revBtn.textContent = '⇄ Reverse';
+        revBtn.addEventListener('click', async () => {
+          seg.reverse = !seg.reverse;
+          revBtn.classList.toggle('active', seg.reverse);
+          await updateSegmentSetting(dev.ip, seg.id, { reverse: seg.reverse });
+        });
+
+        const mirrorBtn = document.createElement('button');
+        mirrorBtn.type = 'button';
+        mirrorBtn.className = `chip-toggle ${seg.mirror ? 'active' : ''}`;
+        mirrorBtn.title = 'Mirror animation from center';
+        mirrorBtn.textContent = '⇋ Mirror';
+        mirrorBtn.addEventListener('click', async () => {
+          seg.mirror = !seg.mirror;
+          mirrorBtn.classList.toggle('active', seg.mirror);
+          await updateSegmentSetting(dev.ip, seg.id, { mirror: seg.mirror });
+        });
+
+        toggles.appendChild(revBtn);
+        toggles.appendChild(mirrorBtn);
+        controls.appendChild(toggles);
+
+        row.appendChild(controls);
+        segmentsContainer.appendChild(row);
+      });
+
+      card.appendChild(segmentsContainer);
+      devicesListEl.appendChild(card);
+    });
+  }
+
+  async function updateSegmentSetting(ip, segId, patch) {
+    try {
+      await fetch(`/api/wled/devices/${encodeURIComponent(ip)}/segments/${segId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      });
+    } catch (e) {
+      console.error('Failed to update segment:', e);
+    }
+  }
+
+  async function saveDevicesConfig(devices) {
+    try {
+      await fetch('/api/wled/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ devices })
+      });
+    } catch (e) {
+      console.error('Failed to save devices:', e);
     }
   }
 
@@ -441,6 +709,10 @@
           }
         }
         if (data.audio) {
+          if (data.audio.mode) {
+            const sourceBtns = document.querySelectorAll('.source-btn');
+            sourceBtns.forEach(b => b.classList.toggle('active', b.dataset.source === data.audio.mode));
+          }
           if (gainSlider && data.audio.gain !== undefined) {
             gainSlider.value = data.audio.gain;
             if (gainVal) gainVal.textContent = `${data.audio.gain.toFixed(1)}x`;
@@ -454,6 +726,23 @@
             if (squelchVal) squelchVal.textContent = data.audio.squelch.toFixed(3);
           }
         }
+        if (data.wled) {
+          if (data.wled.mode) {
+            const modeBtns = document.querySelectorAll('.mode-btn');
+            modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === data.wled.mode));
+            if (modeBadge) modeBadge.textContent = `Mode: ${data.wled.mode.toUpperCase()}`;
+          }
+          if (data.wled.effect) {
+            const effectBtns = document.querySelectorAll('.effect-btn');
+            effectBtns.forEach(b => b.classList.toggle('active', b.dataset.effect === data.wled.effect));
+          }
+          if (data.wled.palette) {
+            updateActivePaletteUI(data.wled.palette);
+          }
+          if (data.wled.devices) {
+            renderDevicesList(data.wled.devices, data.wled.available_effects);
+          }
+        }
       }
     } catch (e) {
       console.warn('Could not fetch initial status:', e);
@@ -462,6 +751,7 @@
 
   // Initialize
   document.addEventListener('DOMContentLoaded', () => {
+    resizeCanvas();
     setupControls();
     fetchInitialStatus();
     connectWebSocket();

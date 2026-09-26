@@ -129,7 +129,8 @@
           <div class="control-group">
             <div class="control-label">Audio Ingest Source</div>
             <div class="segmented-control" role="group" aria-label="Audio Ingest Source">
-              <button type="button" class="seg-btn source-btn active" data-source="snapclient" id="btnSourceSnapclient">Snapcast</button>
+              <button type="button" class="seg-btn source-btn active" data-source="squeezelite" id="btnSourceSqueezelite">Squeezelite</button>
+              <button type="button" class="seg-btn source-btn" data-source="snapclient" id="btnSourceSnapclient">Snapcast</button>
               <button type="button" class="seg-btn source-btn" data-source="fifo" id="btnSourceFifo">Pipe FIFO</button>
               <button type="button" class="seg-btn source-btn" data-source="test" id="btnSourceTest">Synthetic Beat</button>
             </div>
@@ -145,6 +146,78 @@
             <button type="button" class="seg-btn effect-btn" data-effect="energy_wave" id="btnEffectWave">Energy Wave</button>
             <button type="button" class="seg-btn effect-btn" data-effect="vu_meter" id="btnEffectVu">VU Meter</button>
             <button type="button" class="seg-btn effect-btn" data-effect="beat_flash" id="btnEffectFlash">Beat Drop Flash</button>
+          </div>
+        </div>
+
+        <!-- Color Palette Selection -->
+        <div class="control-group" style="margin-top: 16px;">
+          <div class="control-header">
+            <span class="control-label">Color Palette (DDP & Ambient WLED)</span>
+            <span class="control-val" id="activePaletteLabel">Album Cover (Auto)</span>
+          </div>
+          <div class="palette-grid" id="paletteGrid" role="group" aria-label="Color Palette Selection">
+            <button type="button" class="palette-card active" data-palette="album_art" id="btnPaletteAlbumArt">
+              <div class="palette-card-name">Album Cover</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, var(--palette-c1, #ff7800), var(--palette-c2, #ff2864), var(--palette-c3, #00e5ff));"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="cyberpunk" id="btnPaletteCyberpunk">
+              <div class="palette-card-name">Cyberpunk Neon</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff0080, #00f0ff, #8200ff, #ffe600);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="sunset" id="btnPaletteSunset">
+              <div class="palette-card-name">Sunset Fire</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff1e3c, #ff6e0a, #ffc31e, #821478);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="vaporwave" id="btnPaletteVaporwave">
+              <div class="palette-card-name">Vaporwave</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff6eb4, #46e6e6, #a05aff, #ffc8f0);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="aurora" id="btnPaletteAurora">
+              <div class="palette-card-name">Aurora Borealis</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #00ffa0, #00c8f0, #1e64ff, #b432ff);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="magma" id="btnPaletteMagma">
+              <div class="palette-card-name">Molten Magma</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff2800, #ff8c00, #ffd700, #a00a1e);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="forest" id="btnPaletteForest">
+              <div class="palette-card-name">Emerald Forest</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #00e66e, #50ff3c, #00a08c, #c8d228);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="glacial" id="btnPaletteGlacial">
+              <div class="palette-card-name">Glacial Frost</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #f0faff, #82dcff, #2896ff, #0f46c8);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="rainbow" id="btnPaletteRainbow">
+              <div class="palette-card-name">Rainbow Prism</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff0000, #ff8c00, #ffe600, #00e650, #00b4ff, #8200ff);"></div>
+            </button>
+            <button type="button" class="palette-card" data-palette="candle" id="btnPaletteCandle">
+              <div class="palette-card-name">Warm Candle</div>
+              <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff821e, #ffb946, #dc5014, #ffdc8c);"></div>
+            </button>
+          </div>
+        </div>
+
+        <!-- WLED Hosts & Segment Configuration -->
+        <div class="control-group segments-manager-group" style="margin-top: 16px;">
+          <div class="control-header">
+            <div>
+              <span class="control-label">WLED Devices & Segment Effects</span>
+              <div class="control-sublabel">Independent audio visualizer effects, directions, and ranges per cabinet segment</div>
+            </div>
+            <div class="header-action-btns">
+              <button type="button" class="btn btn-sm btn-outline" id="btnSyncWledSegments" title="Scan and read configured segments directly from WLED hardware">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+                </svg>
+                Sync from WLED
+              </button>
+            </div>
+          </div>
+
+          <div class="devices-list" id="devicesList">
+            <!-- Populated via JavaScript on load and WebSocket updates -->
           </div>
         </div>
       </section>
@@ -183,7 +256,7 @@
 
         <!-- Palette Swatches -->
         <div class="palette-section">
-          <div class="palette-label">Extracted Artwork Palette</div>
+          <div class="palette-label" id="paletteSourceLabel">Active Color Palette</div>
           <div class="palette-swatches" id="paletteSwatches">
             <div class="palette-swatch" style="background-color: #ff7800;" title="#ff7800"></div>
             <div class="palette-swatch" style="background-color: #ff2864;" title="#ff2864"></div>

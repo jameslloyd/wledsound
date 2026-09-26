@@ -5,7 +5,7 @@ import json
 import asyncio
 import logging
 from typing import Set, Dict, Any, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -62,6 +62,33 @@ def create_web_app(coordinator: Any) -> FastAPI:
     async def sync_palette():
         success = await coordinator.sync_palette_to_wled()
         return {"status": "ok" if success else "error"}
+
+    @app.post("/api/wled/palette/{palette_id}")
+    async def set_palette(palette_id: str):
+        coordinator.set_palette(palette_id)
+        return {"status": "ok", "palette": palette_id}
+
+    @app.get("/api/wled/devices")
+    async def get_devices():
+        return {"devices": coordinator.get_devices()}
+
+    @app.post("/api/wled/devices/discover")
+    async def discover_devices():
+        devices = await coordinator.discover_devices()
+        return {"status": "ok", "devices": devices}
+
+    @app.post("/api/wled/devices/{ip}/segments/{segment_id}")
+    async def update_device_segment(ip: str, segment_id: int, request: Request):
+        payload = await request.json()
+        success = coordinator.update_segment(ip, segment_id, payload)
+        return {"status": "ok" if success else "error"}
+
+    @app.post("/api/wled/devices")
+    async def save_devices(request: Request):
+        payload = await request.json()
+        devices = payload.get("devices", [])
+        coordinator.update_devices_config(devices)
+        return {"status": "ok", "devices": coordinator.get_devices()}
 
     @app.websocket("/ws/visualizer")
     async def websocket_visualizer(websocket: WebSocket):
