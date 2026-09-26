@@ -212,14 +212,10 @@ class ServiceCoordinator:
         # Broadcast update to web visualizer immediately
         self._broadcast_frame(self.get_telemetry_frame())
 
-        # Sync palette to WLED segment colors if enabled and using dynamic album art
+        # Sync palette to WLED segment colors if enabled
         if self.config.wled.sync_album_art_colors and self.wled_clients:
-            if self.visualizer.palette_name == "album_art" and track.palette:
-                if self._loop and self._loop.is_running():
-                    for client in self.wled_clients.values():
-                        asyncio.run_coroutine_threadsafe(
-                            client.set_segment_colors(track.palette), self._loop
-                        )
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.sync_palette_to_wled(), self._loop)
 
     def _on_playback_state_changed(self, state: str) -> None:
         """Invoked when Music Assistant playback state changes."""
@@ -287,15 +283,35 @@ class ServiceCoordinator:
         self._broadcast_frame(frame)
 
     async def sync_palette_to_wled(self) -> bool:
-        """Pushes current active palette to all WLED devices."""
+        """Pushes configured palettes to all WLED devices and their segments."""
         if not self.wled_clients:
             return False
-        palette = self.visualizer.get_palette(self.current_track.palette)
-        results = await asyncio.gather(
-            *[client.set_segment_colors(palette) for client in self.wled_clients.values()],
-            return_exceptions=True
-        )
-        return any(r is True for r in results)
+        global_palette = self.visualizer.get_palette(self.current_track.palette)
+        tasks = []
+        for dev in self.config.wled.devices:
+            client = self.wled_clients.get(dev.ip)
+            if not client:
+                continue
+            if dev.segments:
+                seg_map = {}
+                for seg in dev.segments:
+                    if seg.palette and seg.palette != "inherit":
+                        seg_pal = self.visualizer.get_palette_by_name(seg.palette, self.current_track.palette)
+                    else:
+                        seg_pal = global_palette
+                    seg_map[seg.id] = seg_pal
+                tasks.append(client.set_multi_segment_colors(seg_map))
+            else:
+                tasks.append(client.set_segment_colors(global_palette))
+
+        for host, client in self.wled_clients.items():
+            if not any(d.ip == host for d in self.config.wled.devices):
+                tasks.append(client.set_segment_colors(global_palette))
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return any(r is True for r in results)
+        return False
 
     def set_palette(self, palette_name: str) -> None:
         """Sets active color palette, notifies visualizer, saves config, and pushes to WLED."""
@@ -308,11 +324,7 @@ class ServiceCoordinator:
 
         if self.config.wled.sync_album_art_colors and self.wled_clients:
             if self._loop and self._loop.is_running():
-                palette = self.visualizer.get_palette(self.current_track.palette)
-                for client in self.wled_clients.values():
-                    asyncio.run_coroutine_threadsafe(
-                        client.set_segment_colors(palette), self._loop
-                    )
+                asyncio.run_coroutine_threadsafe(self.sync_palette_to_wled(), self._loop)
 
     def get_devices(self) -> List[Dict[str, Any]]:
         """Returns list of configured devices with segments."""
@@ -367,6 +379,17 @@ class ServiceCoordinator:
                                 setattr(seg, k, v)
                         save_config(self.config, self.config_path)
                         self._broadcast_frame(self.get_telemetry_frame())
+
+                        # If palette was updated, also push segment color to WLED hardware
+                        if "palette" in patch and self._loop and self._loop.is_running():
+                            client = self.wled_clients.get(device_ip)
+                            if client:
+                                global_pal = self.visualizer.get_palette(self.current_track.palette)
+                                seg_pal = self.visualizer.get_palette_by_name(seg.palette, self.current_track.palette) if (seg.palette and seg.palette != "inherit") else global_pal
+                                asyncio.run_coroutine_threadsafe(
+                                    client.set_segment_colors(seg_pal, segment_id=segment_id),
+                                    self._loop
+                                )
                         return True
         return False
 

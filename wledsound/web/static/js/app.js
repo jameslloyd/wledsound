@@ -633,6 +633,49 @@
         selectWrap.appendChild(select);
         controls.appendChild(selectWrap);
 
+        // Palette Selector
+        const paletteWrap = document.createElement('div');
+        paletteWrap.className = 'seg-select-wrapper';
+        paletteWrap.innerHTML = `<label class="seg-field-label">Palette:</label>`;
+
+        const paletteSelect = document.createElement('select');
+        paletteSelect.className = 'seg-select seg-palette-select';
+        paletteSelect.dataset.ip = dev.ip;
+        paletteSelect.dataset.segId = seg.id;
+
+        const paletteOptions = [
+          { id: '', name: '🌐 Global Palette' },
+          { id: 'album_art', name: '🎨 Album Cover (Auto)' },
+          { id: 'cyberpunk', name: 'Cyberpunk Neon' },
+          { id: 'sunset', name: 'Sunset Fire' },
+          { id: 'vaporwave', name: 'Vaporwave Retro' },
+          { id: 'aurora', name: 'Aurora Borealis' },
+          { id: 'magma', name: 'Molten Magma' },
+          { id: 'forest', name: 'Emerald Forest' },
+          { id: 'glacial', name: 'Glacial Frost' },
+          { id: 'rainbow', name: 'Rainbow Prism' },
+          { id: 'candle', name: 'Warm Candle' }
+        ];
+
+        paletteOptions.forEach(pOpt => {
+          const opt = document.createElement('option');
+          opt.value = pOpt.id;
+          opt.textContent = pOpt.name;
+          const currentPal = seg.palette || '';
+          if (currentPal === pOpt.id || (pOpt.id === '' && (!seg.palette || seg.palette === 'inherit'))) {
+            opt.selected = true;
+          }
+          paletteSelect.appendChild(opt);
+        });
+
+        paletteSelect.addEventListener('change', async (e) => {
+          const newPal = e.target.value || null;
+          seg.palette = newPal;
+          await updateSegmentSetting(dev.ip, seg.id, { palette: newPal });
+        });
+        paletteWrap.appendChild(paletteSelect);
+        controls.appendChild(paletteWrap);
+
         const toggles = document.createElement('div');
         toggles.className = 'seg-toggles';
 

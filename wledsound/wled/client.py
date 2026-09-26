@@ -87,6 +87,24 @@ class WLEDClient:
 
         return await self._post_state(payload)
 
+    async def set_multi_segment_colors(self, segment_color_map: Dict[int, List[Tuple[int, int, int]]]) -> bool:
+        """Pushes different palette colors to multiple segments simultaneously.
+        
+        Args:
+            segment_color_map: Dict mapping segment_id -> list of (r, g, b) tuples.
+        """
+        if not segment_color_map:
+            return False
+
+        seg_list = []
+        for seg_id, colors in segment_color_map.items():
+            col_list = [[c[0], c[1], c[2]] for c in colors[:3]]
+            while len(col_list) < 3:
+                col_list.append([0, 0, 0])
+            seg_list.append({"id": seg_id, "col": col_list})
+
+        return await self._post_state({"seg": seg_list})
+
     async def set_preset(self, preset_id: int) -> bool:
         """Loads a WLED preset by ID."""
         return await self._post_state({"ps": preset_id})
