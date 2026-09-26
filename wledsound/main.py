@@ -43,6 +43,8 @@ class ServiceCoordinator:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._telemetry_broadcaster: Optional[Callable[[Dict[str, Any]], Any]] = None
         self._last_telemetry_time = 0.0
+        self._last_audio_chunk_time = 0.0
+        self._heartbeat_task: Optional[asyncio.Task] = None
 
         # Initialize Subsystems
         self._init_dsp()
@@ -108,8 +110,44 @@ class ServiceCoordinator:
     def set_telemetry_broadcaster(self, broadcaster: Callable[[Dict[str, Any]], Any]) -> None:
         self._telemetry_broadcaster = broadcaster
 
+    def get_telemetry_frame(self) -> Dict[str, Any]:
+        """Returns the current telemetry frame for WebSocket clients."""
+        features = self.current_features
+        mass_online = bool(
+            self.mass_client
+            and self.current_track.state
+            and self.current_track.state not in ("", "offline", "unauthenticated")
+        )
+        return {
+            "bands": features.fft_result,
+            "sample_raw": round(features.sample_raw, 1),
+            "sample_smth": round(features.sample_smth, 1),
+            "sample_peak": features.sample_peak,
+            "major_peak": round(features.fft_major_peak, 1),
+            "rms": round(features.rms_energy, 4),
+            "waveform": features.waveform_preview,
+            "mass_connected": mass_online,
+            "audio_active": (time.perf_counter() - self._last_audio_chunk_time < 1.0),
+            "track": {
+                "title": self.current_track.title,
+                "artist": self.current_track.artist,
+                "album": self.current_track.album,
+                "state": self.current_track.state,
+                "image_url": self.current_track.image_url,
+                "palette": self.current_track.palette
+            }
+        }
+
+    def _broadcast_frame(self, frame_data: Dict[str, Any]) -> None:
+        if self._telemetry_broadcaster and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._telemetry_broadcaster(frame_data), self._loop
+            )
+
     def _on_audio_chunk(self, pcm_bytes: bytes) -> None:
         """Fast real-time audio chunk processor invoked every ~20ms."""
+        self._last_audio_chunk_time = time.perf_counter()
+
         # 1. DSP Analysis
         features = self.dsp.process_pcm(pcm_bytes)
         self.current_features = features
@@ -129,32 +167,15 @@ class ServiceCoordinator:
         now = time.perf_counter()
         if self._telemetry_broadcaster and (now - self._last_telemetry_time >= 0.025):
             self._last_telemetry_time = now
-            frame_data = {
-                "bands": features.fft_result,
-                "sample_raw": round(features.sample_raw, 1),
-                "sample_smth": round(features.sample_smth, 1),
-                "sample_peak": features.sample_peak,
-                "major_peak": round(features.fft_major_peak, 1),
-                "rms": round(features.rms_energy, 4),
-                "waveform": features.waveform_preview,
-                "track": {
-                    "title": self.current_track.title,
-                    "artist": self.current_track.artist,
-                    "album": self.current_track.album,
-                    "state": self.current_track.state,
-                    "image_url": self.current_track.image_url,
-                    "palette": self.current_track.palette
-                }
-            }
-            if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._telemetry_broadcaster(frame_data), self._loop
-                )
+            self._broadcast_frame(self.get_telemetry_frame())
 
     def _on_track_changed(self, track: TrackInfo) -> None:
         """Invoked when Music Assistant changes tracks."""
         self.current_track = track
         logger.info(f"Updated track: {track.title} by {track.artist}")
+
+        # Broadcast update to web visualizer immediately
+        self._broadcast_frame(self.get_telemetry_frame())
 
         # Sync palette to WLED segment colors if enabled
         if self.config.wled.sync_album_art_colors and self.wled_client and track.palette:
@@ -166,6 +187,8 @@ class ServiceCoordinator:
     def _on_playback_state_changed(self, state: str) -> None:
         """Invoked when Music Assistant playback state changes."""
         logger.info(f"Playback state changed to: {state}")
+        self._broadcast_frame(self.get_telemetry_frame())
+
         if not self.config.wled.auto_power or not self.wled_client:
             return
 
@@ -173,8 +196,17 @@ class ServiceCoordinator:
             if state == "playing":
                 asyncio.run_coroutine_threadsafe(self.wled_client.set_power(True), self._loop)
             elif state in ("paused", "idle", "stopped"):
-                # You can choose to turn off or lower brightness
                 logger.info("Music paused/stopped; maintaining idle state")
+
+    async def _idle_heartbeat_loop(self) -> None:
+        """Periodic heartbeat broadcast ensuring UI stays in sync even when no audio is streaming."""
+        while self._running:
+            await asyncio.sleep(0.5)
+            # If no audio chunks received in the last 0.5s, send idle telemetry frame
+            if time.perf_counter() - self._last_audio_chunk_time >= 0.4:
+                frame = self.get_telemetry_frame()
+                if self._telemetry_broadcaster:
+                    await self._telemetry_broadcaster(frame)
 
     async def toggle_wled_power(self) -> bool:
         """Toggles WLED power on/off."""
@@ -269,11 +301,16 @@ class ServiceCoordinator:
         if self.mass_client:
             await self.mass_client.start()
 
+        # Start idle heartbeat task
+        self._heartbeat_task = asyncio.create_task(self._idle_heartbeat_loop())
+
         logger.info(f"WLEDSound initialized successfully in mode '{self.config.wled.mode}'")
 
     async def stop(self) -> None:
         """Stops all components cleanly."""
         self._running = False
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
         self.capture.stop()
         if self.mass_client:
             await self.mass_client.stop()

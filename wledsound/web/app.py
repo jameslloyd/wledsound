@@ -69,6 +69,13 @@ def create_web_app(coordinator: Any) -> FastAPI:
         active_websockets.add(websocket)
         logger.debug(f"Web visualizer client connected ({len(active_websockets)} total)")
 
+        # Send initial state immediately upon connection
+        try:
+            initial_frame = coordinator.get_telemetry_frame()
+            await websocket.send_text(json.dumps(initial_frame))
+        except Exception:
+            pass
+
         try:
             while True:
                 # Keep connection alive & listen for client messages

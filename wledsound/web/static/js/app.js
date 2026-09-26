@@ -119,6 +119,14 @@
       rmsEl.textContent = `${db} dB`;
     }
 
+    // Connection badges
+    if (massBadge && data.mass_connected !== undefined) {
+      massBadge.classList.toggle('online', !!data.mass_connected);
+    }
+    if (snapcastBadge && data.audio_active !== undefined) {
+      snapcastBadge.classList.toggle('online', !!data.audio_active);
+    }
+
     // Metadata & palette updates
     if (data.track) {
       updateNowPlaying(data.track);
@@ -419,9 +427,43 @@
     }
   }
 
+  // Fetch initial system status & track on load
+  async function fetchInitialStatus() {
+    try {
+      const resp = await fetch('/api/status');
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.music_assistant) {
+          updateNowPlaying(data.music_assistant);
+          if (massBadge) {
+            const isOnline = data.music_assistant.enabled && data.music_assistant.state && data.music_assistant.state !== 'offline';
+            massBadge.classList.toggle('online', !!isOnline);
+          }
+        }
+        if (data.audio) {
+          if (gainSlider && data.audio.gain !== undefined) {
+            gainSlider.value = data.audio.gain;
+            if (gainVal) gainVal.textContent = `${data.audio.gain.toFixed(1)}x`;
+          }
+          if (smoothSlider && data.audio.smoothing !== undefined) {
+            smoothSlider.value = data.audio.smoothing;
+            if (smoothVal) smoothVal.textContent = data.audio.smoothing.toFixed(2);
+          }
+          if (squelchSlider && data.audio.squelch !== undefined) {
+            squelchSlider.value = data.audio.squelch;
+            if (squelchVal) squelchVal.textContent = data.audio.squelch.toFixed(3);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch initial status:', e);
+    }
+  }
+
   // Initialize
   document.addEventListener('DOMContentLoaded', () => {
     setupControls();
+    fetchInitialStatus();
     connectWebSocket();
     animationFrameId = requestAnimationFrame(render);
   });
