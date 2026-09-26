@@ -107,7 +107,8 @@ class AudioCapture:
             "-m", self.mac_address,
             "-o", "-",
             "-a", "16",
-            "-b", "2048:3445",
+            "-b", "512:1024",
+            "-r", f"{self.sample_rate}",
             "-f", "/tmp/squeezelite.log",
             "-d", "all=info"
         ]
@@ -124,22 +125,14 @@ class AudioCapture:
             self.mode = "test"
             return
 
-        frame_interval = self.frame_duration_ms / 1000.0
         while self._running and self._process.poll() is None:
             if not self._process.stdout:
                 break
-            start_t = time.perf_counter()
             raw_chunk = self._process.stdout.read(self.bytes_per_frame)
             if not raw_chunk:
                 break
             if len(raw_chunk) == self.bytes_per_frame and self._callback:
                 self._callback(raw_chunk)
-
-            # Pace reads at real-time rate (20ms) because stdout pipe has no hardware DAC clock
-            elapsed = time.perf_counter() - start_t
-            sleep_time = frame_interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
 
         if self._process:
             logger.warning(f"squeezelite exited with code {self._process.returncode}. Reconnecting in 2s...")
