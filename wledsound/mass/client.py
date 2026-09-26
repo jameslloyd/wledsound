@@ -39,6 +39,7 @@ class MusicAssistantClient:
         self._on_track_changed: Optional[Callable[[TrackInfo], None]] = None
         self._on_state_changed: Optional[Callable[[str], None]] = None
         self._auth_warning_logged = False
+        self._active_playing_player_id: Optional[str] = None
 
     def set_callbacks(
         self,
@@ -113,32 +114,47 @@ class MusicAssistantClient:
 
     async def _run_official_client(self) -> None:
         """Uses official music-assistant-client library."""
-        async with OfficialMassClient(self.server_url, None, token=self.token) as client:
-            logger.info("Successfully connected to Music Assistant via official client!")
-            self._auth_warning_logged = False
+        from music_assistant_models.enums import EventType
+        client = OfficialMassClient(self.server_url, None, token=self.token)
+        await client.connect()
+        logger.info("Successfully connected to Music Assistant via official client!")
+        self._auth_warning_logged = False
 
-            # Query initial players
-            players = await client.players.get_players()
-            for player in players:
-                if self._matches_player_id(player.player_id):
-                    await self._update_from_official_player(player, client)
+        # Launch the background listening loop
+        listen_task = asyncio.create_task(client.start_listening())
+        await asyncio.sleep(0.5)
+
+        # Check currently playing or existing players
+        for player in client.players.players:
+            if self._matches_player_id(player.player_id):
+                await self._update_from_official_player(player, client)
+                if str(getattr(player, "playback_state", "")).lower() == "playing":
                     break
 
-            # Define listener callback for player updates
-            def on_player_event(event):
-                try:
-                    player_data = event.data
-                    if player_data and self._matches_player_id(getattr(player_data, "player_id", None)):
-                        asyncio.create_task(self._update_from_official_player(player_data, client))
-                except Exception as err:
-                    logger.debug(f"Error handling player event: {err}")
+        # Define listener callback for player events
+        def on_player_event(event):
+            try:
+                p_id = getattr(event, "object_id", None)
+                player = None
+                if hasattr(event, "data") and event.data:
+                    player = event.data
+                elif p_id:
+                    player = client.players.get(p_id)
 
-            # Subscribe to player events
-            client.subscribe(on_player_event, "player_updated")
-            client.subscribe(on_player_event, "queue_updated")
+                if player and self._matches_player_id(getattr(player, "player_id", None)):
+                    asyncio.create_task(self._update_from_official_player(player, client))
+            except Exception as err:
+                logger.debug(f"Error handling player event: {err}")
 
-            # Start listening until cancelled or disconnected
-            await client.start_listening()
+        # Subscribe to player events
+        client.subscribe(on_player_event, (EventType.PLAYER_UPDATED, EventType.QUEUE_UPDATED))
+
+        try:
+            await listen_task
+        finally:
+            if not listen_task.done():
+                listen_task.cancel()
+            await client.disconnect()
 
     def _matches_player_id(self, player_id: Optional[str]) -> bool:
         if not self.target_player_id or not player_id:
@@ -147,9 +163,19 @@ class MusicAssistantClient:
 
     async def _update_from_official_player(self, player: Any, client: Any) -> None:
         """Extracts track details and artwork from official player object."""
-        state = "playing" if getattr(player, "playback_state", "").lower() == "playing" else "idle"
-        current_media = getattr(player, "current_media", None)
+        state = str(getattr(player, "playback_state", "")).lower()
+        player_id = getattr(player, "player_id", "")
 
+        # If auto-tracking across multiple players, prioritize the currently active playing player
+        if not self.target_player_id:
+            if state != "playing" and self._active_playing_player_id and self._active_playing_player_id != player_id:
+                active_p = client.players.get(self._active_playing_player_id)
+                if active_p and str(getattr(active_p, "playback_state", "")).lower() == "playing":
+                    return
+            if state == "playing":
+                self._active_playing_player_id = player_id
+
+        current_media = getattr(player, "current_media", None)
         title = "Unknown Title"
         artist = "Unknown Artist"
         album = ""
@@ -161,7 +187,6 @@ class MusicAssistantClient:
             album = getattr(current_media, "album", "")
             image_url = getattr(current_media, "image_url", None)
 
-        # If image_url is relative, prefix with server base URL
         if image_url and not image_url.startswith(("http://", "https://")):
             image_url = f"{self.server_url}/{image_url.lstrip('/')}"
 
