@@ -1,10 +1,5 @@
-"""Music Assistant WebSocket & REST client.
+"""Music Assistant client with support for official library and token auth."""
 
-Monitors real-time playback states, active track metadata, album artwork,
-and triggers color palette extraction when songs change.
-"""
-
-import json
 import asyncio
 import logging
 import aiohttp
@@ -13,6 +8,13 @@ from ..audio.types import TrackInfo
 from .palette import PaletteExtractor
 
 logger = logging.getLogger(__name__)
+
+try:
+    from music_assistant_client import MusicAssistantClient as OfficialMassClient
+    from music_assistant_models.errors import AuthenticationRequired
+    HAS_OFFICIAL_CLIENT = True
+except ImportError:
+    HAS_OFFICIAL_CLIENT = False
 
 
 class MusicAssistantClient:
@@ -26,9 +28,8 @@ class MusicAssistantClient:
         palette_extractor: Optional[PaletteExtractor] = None
     ):
         self.server_url = server_url.rstrip("/")
-        self.ws_url = self.server_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
         self.target_player_id = player_id
-        self.token = token
+        self.token = token.strip() if token else None
         self.palette_extractor = palette_extractor or PaletteExtractor()
 
         self.current_track = TrackInfo()
@@ -37,6 +38,7 @@ class MusicAssistantClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._on_track_changed: Optional[Callable[[TrackInfo], None]] = None
         self._on_state_changed: Optional[Callable[[str], None]] = None
+        self._auth_warning_logged = False
 
     def set_callbacks(
         self,
@@ -52,9 +54,8 @@ class MusicAssistantClient:
         if self._running:
             return
         self._running = True
-        self._session = aiohttp.ClientSession()
-        self._task = asyncio.create_task(self._connection_loop())
-        logger.info(f"Music Assistant listener started for {self.server_url}")
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info(f"Music Assistant client started for {self.server_url}")
 
     async def stop(self) -> None:
         """Stops the client."""
@@ -67,109 +68,191 @@ class MusicAssistantClient:
                 pass
         if self._session and not self._session.closed:
             await self._session.close()
-        logger.info("Music Assistant listener stopped")
+        logger.info("Music Assistant client stopped")
 
-    async def _connection_loop(self) -> None:
-        """Reconnection loop for WebSocket connection."""
-        backoff = 2.0
+    async def _run_loop(self) -> None:
+        """Main connection management loop with exponential backoff."""
+        backoff = 4.0
         while self._running:
             try:
-                headers = {}
-                if self.token:
-                    headers["Authorization"] = f"Bearer {self.token}"
+                if not self.token:
+                    if not self._auth_warning_logged:
+                        logger.warning(
+                            "Music Assistant server (v2.x) requires an authentication token. "
+                            "Create a Long-Lived Token in Music Assistant (Settings -> Core / Authentication) "
+                            "and add it to config.yaml under 'music_assistant: token: YOUR_TOKEN' to enable live artwork & metadata. "
+                            "Retrying in 20 seconds..."
+                        )
+                        self._auth_warning_logged = True
+                    await asyncio.sleep(20.0)
+                    continue
 
-                logger.debug(f"Connecting to Music Assistant WS: {self.ws_url}")
-                async with self._session.ws_connect(self.ws_url, headers=headers) as ws:
-                    logger.info("Connected to Music Assistant WebSocket!")
-                    backoff = 2.0
-
-                    # Request initial players list
-                    cmd_id = 1
-                    await ws.send_json({"cmd": "players/all", "message_id": cmd_id})
-
-                    # Listen for messages
-                    async for msg in ws:
-                        if not self._running:
-                            break
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_ws_message(msg.data)
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            break
-
+                if HAS_OFFICIAL_CLIENT:
+                    await self._run_official_client()
+                else:
+                    await self._run_raw_ws_client()
+                backoff = 4.0
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"Music Assistant connection error: {e}. Retrying in {backoff:.1f}s...")
+                err_msg = str(e)
+                if "Authentication" in err_msg or "AuthenticationRequired" in type(e).__name__:
+                    if not self._auth_warning_logged:
+                        logger.warning(
+                            "Music Assistant authentication failed. Please verify your token in config.yaml. "
+                            "Retrying in 20 seconds..."
+                        )
+                        self._auth_warning_logged = True
+                    await asyncio.sleep(20.0)
+                    continue
+                else:
+                    logger.warning(f"Music Assistant connection error: {e}. Retrying in {backoff:.1f}s...")
+
                 await asyncio.sleep(backoff)
                 backoff = min(30.0, backoff * 1.5)
 
-    async def _handle_ws_message(self, raw_data: str) -> None:
-        """Parses Music Assistant WebSocket frames."""
+    async def _run_official_client(self) -> None:
+        """Uses official music-assistant-client library."""
+        async with OfficialMassClient(self.server_url, None, token=self.token) as client:
+            logger.info("Successfully connected to Music Assistant via official client!")
+            self._auth_warning_logged = False
+
+            # Query initial players
+            players = await client.players.get_players()
+            for player in players:
+                if self._matches_player_id(player.player_id):
+                    await self._update_from_official_player(player, client)
+                    break
+
+            # Define listener callback for player updates
+            def on_player_event(event):
+                try:
+                    player_data = event.data
+                    if player_data and self._matches_player_id(getattr(player_data, "player_id", None)):
+                        asyncio.create_task(self._update_from_official_player(player_data, client))
+                except Exception as err:
+                    logger.debug(f"Error handling player event: {err}")
+
+            # Subscribe to player events
+            client.subscribe(on_player_event, "player_updated")
+            client.subscribe(on_player_event, "queue_updated")
+
+            # Start listening until cancelled or disconnected
+            await client.start_listening()
+
+    def _matches_player_id(self, player_id: Optional[str]) -> bool:
+        if not self.target_player_id or not player_id:
+            return True
+        return player_id == self.target_player_id
+
+    async def _update_from_official_player(self, player: Any, client: Any) -> None:
+        """Extracts track details and artwork from official player object."""
+        state = "playing" if getattr(player, "playback_state", "").lower() == "playing" else "idle"
+        current_media = getattr(player, "current_media", None)
+
+        title = "Unknown Title"
+        artist = "Unknown Artist"
+        album = ""
+        image_url = None
+
+        if current_media:
+            title = getattr(current_media, "title", None) or getattr(current_media, "name", "Unknown Title")
+            artist = getattr(current_media, "artist", "Unknown Artist")
+            album = getattr(current_media, "album", "")
+            image_url = getattr(current_media, "image_url", None)
+
+        # If image_url is relative, prefix with server base URL
+        if image_url and not image_url.startswith(("http://", "https://")):
+            image_url = f"{self.server_url}/{image_url.lstrip('/')}"
+
+        await self._process_track_update(title, artist, album, image_url, state)
+
+    async def _run_raw_ws_client(self) -> None:
+        """Fallback raw WebSocket listener if official client is unavailable."""
+        ws_url = self.server_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, headers=headers) as ws:
+                logger.info("Connected to Music Assistant WebSocket (raw client)")
+                self._auth_warning_logged = False
+
+                # Initial handshake message from MA server
+                init_msg = await ws.receive()
+                if init_msg.type != aiohttp.WSMsgType.TEXT:
+                    logger.warning(f"Unexpected initial WS message: {init_msg}")
+                    await asyncio.sleep(5.0)
+                    return
+
+                # Send auth if token provided
+                if self.token:
+                    await ws.send_json({"cmd": "auth", "token": self.token, "message_id": 1})
+
+                # Send get players command
+                await ws.send_json({"cmd": "players/all", "message_id": 2})
+
+                async for msg in ws:
+                    if not self._running:
+                        break
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        await self._handle_raw_json(msg.data)
+                    elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                        break
+
+        await asyncio.sleep(3.0)
+
+    async def _handle_raw_json(self, raw_data: str) -> None:
         try:
             data = json.loads(raw_data)
         except Exception:
             return
 
-        # Handle players/all response or player_updated event
-        event_type = data.get("event")
         result = data.get("result")
-
-        if isinstance(result, list):  # Response to players/all
+        if isinstance(result, list):
             for player in result:
-                if self._matches_player(player):
-                    await self._update_from_player_data(player)
+                p_id = player.get("player_id") or player.get("id")
+                if self._matches_player_id(p_id):
+                    await self._update_from_dict(player)
                     break
-
-        elif event_type in ("player_updated", "queue_updated"):
+        elif data.get("event") in ("player_updated", "queue_updated"):
             player = data.get("data")
-            if isinstance(player, dict) and self._matches_player(player):
-                await self._update_from_player_data(player)
+            if isinstance(player, dict):
+                p_id = player.get("player_id") or player.get("id")
+                if self._matches_player_id(p_id):
+                    await self._update_from_dict(player)
 
-    def _matches_player(self, player_data: Dict[str, Any]) -> bool:
-        """Determines if the given player dict matches our target."""
-        p_id = player_data.get("player_id") or player_data.get("id")
-        if not self.target_player_id:
-            # If no target configured, match any playing player, or the first available
-            return True
-        return p_id == self.target_player_id
+    async def _update_from_dict(self, player: Dict[str, Any]) -> None:
+        state = player.get("state", "idle").lower()
+        item = player.get("current_item") or player.get("current_media") or {}
+        media = item.get("media_item") or item
 
-    async def _update_from_player_data(self, player_data: Dict[str, Any]) -> None:
-        """Updates internal state and extracts artwork colors if changed."""
-        # Determine state
-        raw_state = player_data.get("state", "idle")
-        if isinstance(raw_state, str):
-            state = raw_state.lower()
-        else:
-            state = "playing" if player_data.get("powered") else "idle"
+        title = media.get("name") or media.get("title") or "Unknown Title"
+        artists = media.get("artists") or []
+        artist = artists[0].get("name") if (artists and isinstance(artists[0], dict)) else media.get("artist", "Unknown Artist")
+        album = media.get("album", {}).get("name", "") if isinstance(media.get("album"), dict) else str(media.get("album", ""))
 
-        # Media item or current item
-        current_item = player_data.get("current_item") or player_data.get("current_media") or {}
-        media_item = current_item.get("media_item") or current_item
-
-        title = media_item.get("name") or media_item.get("title") or "Unknown Title"
-        artists = media_item.get("artists") or []
-        if isinstance(artists, list) and artists:
-            artist = artists[0].get("name") if isinstance(artists[0], dict) else str(artists[0])
-        else:
-            artist = media_item.get("artist") or "Unknown Artist"
-
-        album_obj = media_item.get("album") or {}
-        album = album_obj.get("name") if isinstance(album_obj, dict) else str(album_obj) if album_obj else ""
-
-        # Extract image URL
         image_url = None
-        images = media_item.get("metadata", {}).get("images") or media_item.get("images") or []
-        if isinstance(images, list) and images:
+        images = media.get("metadata", {}).get("images") or media.get("images") or []
+        if images and isinstance(images, list):
             img = images[0]
             image_url = img.get("path") or img.get("url") if isinstance(img, dict) else str(img)
 
-        # Resolve relative image URL against MA server URL
         if image_url and not image_url.startswith(("http://", "https://")):
             image_url = f"{self.server_url}/{image_url.lstrip('/')}"
 
-        # Check if state changed
+        await self._process_track_update(title, artist, album, image_url, state)
+
+    async def _process_track_update(
+        self, title: str, artist: str, album: str, image_url: Optional[str], state: str
+    ) -> None:
         state_changed = (state != self.current_track.state)
-        track_changed = (title != self.current_track.title or artist != self.current_track.artist or image_url != self.current_track.image_url)
+        track_changed = (
+            title != self.current_track.title or
+            artist != self.current_track.artist or
+            image_url != self.current_track.image_url
+        )
 
         self.current_track.state = state
         self.current_track.title = title
@@ -179,7 +262,6 @@ class MusicAssistantClient:
         if track_changed:
             self.current_track.image_url = image_url
             logger.info(f"Now Playing: '{title}' by '{artist}' (State: {state})")
-            # Extract color palette
             if image_url:
                 palette = await self.palette_extractor.extract_from_url(image_url)
                 self.current_track.palette = palette
