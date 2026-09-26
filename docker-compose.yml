@@ -1,0 +1,24 @@
+services:
+  wledsound:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wledsound
+    restart: unless-stopped
+    # On Linux (recommended for UDP multicast 239.0.0.1 to reach WLED):
+    network_mode: host
+    
+    # If host networking is not supported on your host OS (e.g. macOS Docker Desktop),
+    # comment out 'network_mode: host' and uncomment the ports below:
+    # ports:
+    #   - "8080:8080/tcp"      # Web Dashboard
+    #   - "11988:11988/udp"    # WLED AudioSync
+    #   - "4048:4048/udp"      # WLED DDP
+
+    volumes:
+      - ./config:/config
+      # Optional: mount named pipe if using FIFO mode from host
+      # - /tmp/snapfifo:/tmp/snapfifo:ro
+
+    environment:
+      - TZ=UTC

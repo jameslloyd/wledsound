@@ -1,0 +1,60 @@
+# ==========================================
+# WLEDSOUND Configuration File
+# ==========================================
+
+audio:
+  # Mode options:
+  # - "snapclient": Spawns snapclient subprocess to capture PCM audio from your Snapcast server
+  # - "fifo": Reads from an existing named pipe (e.g., /tmp/snapfifo)
+  # - "test": Synthetic 128 BPM electronic music generator (for instant zero-setup testing)
+  mode: "snapclient"
+  snapserver_host: "127.0.0.1"
+  snapserver_port: 1704
+  fifo_path: "/tmp/snapfifo"
+  sample_rate: 48000
+  gain: 1.0           # Overall audio sensitivity (0.1 to 5.0)
+  squelch: 0.005      # Silence cutoff threshold to prevent lights flickering on background hiss
+  agc_enabled: true   # Dynamic Automatic Gain Control (adapts to quiet and loud songs)
+  smoothing: 0.25     # Exponential smoothing (0.05 = slow/gentle, 0.5 = snappy)
+
+wled:
+  # Output mode:
+  # - "hybrid": Sends AudioReactive UDP packets AND streams DDP pixels
+  # - "audiosync": WLED AudioReactive UDP multicast only (drives native WLED sound effects)
+  # - "ddp": Direct DDP pixel streaming only (streams custom visualizers to any WLED strip)
+  mode: "hybrid"
+
+  # WLED AudioReactive UDP targets (default multicast 239.0.0.1:11988)
+  # You can also add unicast IP addresses (e.g., ["239.0.0.1", "192.168.1.150"])
+  audiosync_targets:
+    - "239.0.0.1"
+  audiosync_port: 11988
+  protocol_version: 2 # 2 for WLED 0.14+ (MoonModules / upstream AudioReactive), 1 for legacy SR
+
+  # WLED DDP Pixel Streaming targets (UDP port 4048)
+  # Add the IP address of any WLED strip you want to receive direct DDP visualizer frames
+  ddp_targets:
+    - "192.168.1.150"
+  ddp_port: 4048
+  led_count: 60       # Number of addressable LEDs in your strip
+
+  # Built-in visualizer effect for DDP mode:
+  # Options: "album_pulse", "geq_spectrum", "energy_wave", "vu_meter", "beat_flash"
+  ddp_effect: "album_pulse"
+
+  # WLED HTTP JSON API hosts (for power automation and album art color palette sync)
+  wled_hosts:
+    - "192.168.1.150"
+  auto_power: true            # Turn WLED on when music plays, turn off/idle when paused
+  sync_album_art_colors: true # Push extracted album palette to WLED primary/secondary segment colors
+
+music_assistant:
+  enabled: true
+  server_url: "http://127.0.0.1:8095" # Music Assistant server URL
+  player_id: null                     # Specific MA player ID to follow (leave null to auto-track)
+  token: null                         # Optional authentication token (if enabled in MA)
+
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080

@@ -1,0 +1,94 @@
+"""Configuration management for wledsound."""
+
+import os
+import yaml
+import logging
+from typing import List, Optional
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+
+class AudioSettings(BaseModel):
+    mode: str = Field(default="snapclient", description="Audio capture mode: 'snapclient', 'fifo', or 'test'")
+    snapserver_host: str = Field(default="127.0.0.1", description="Snapserver hostname or IP")
+    snapserver_port: int = Field(default=1704, description="Snapserver stream port")
+    fifo_path: str = Field(default="/tmp/snapfifo", description="Named pipe path if using FIFO mode")
+    sample_rate: int = Field(default=48000, description="PCM audio sample rate in Hz")
+    gain: float = Field(default=1.0, description="Master audio gain multiplier (0.1 - 5.0)")
+    squelch: float = Field(default=0.005, description="Silence/noise floor threshold (0.0 - 0.1)")
+    agc_enabled: bool = Field(default=True, description="Automatic Gain Control")
+    smoothing: float = Field(default=0.25, description="Audio level smoothing factor (0.05 - 0.9)")
+
+
+class WLEDSettings(BaseModel):
+    mode: str = Field(default="hybrid", description="Output mode: 'hybrid', 'audiosync', or 'ddp'")
+    audiosync_targets: List[str] = Field(
+        default_factory=lambda: ["239.0.0.1"],
+        description="IP addresses to send AudioReactive UDP packets to (multicast or unicast)"
+    )
+    audiosync_port: int = Field(default=11988, description="WLED AudioSync UDP port")
+    protocol_version: int = Field(default=2, description="WLED AudioSync protocol: 2 (v0.14+) or 1 (legacy)")
+    ddp_targets: List[str] = Field(
+        default_factory=lambda: [],
+        description="IP addresses of WLED devices for direct DDP pixel streaming"
+    )
+    ddp_port: int = Field(default=4048, description="WLED DDP UDP port")
+    led_count: int = Field(default=60, description="Number of LEDs in strip for DDP streaming")
+    ddp_effect: str = Field(
+        default="album_pulse",
+        description="DDP visualizer: 'album_pulse', 'geq_spectrum', 'energy_wave', 'vu_meter', 'beat_flash'"
+    )
+    wled_hosts: List[str] = Field(
+        default_factory=lambda: [],
+        description="WLED device IPs for HTTP JSON API control (power, segment color palettes)"
+    )
+    auto_power: bool = Field(default=True, description="Turn WLED on when music plays, turn off/idle when paused")
+    sync_album_art_colors: bool = Field(default=True, description="Push album art palette to WLED segment colors")
+
+
+class MusicAssistantSettings(BaseModel):
+    enabled: bool = Field(default=True, description="Enable Music Assistant integration")
+    server_url: str = Field(default="http://127.0.0.1:8095", description="Music Assistant server URL")
+    player_id: Optional[str] = Field(default=None, description="Target MA player ID (auto-select if None)")
+    token: Optional[str] = Field(default=None, description="Optional MA access token")
+
+
+class WebSettings(BaseModel):
+    enabled: bool = Field(default=True, description="Enable Web UI & API dashboard")
+    host: str = Field(default="0.0.0.0", description="Web server bind host")
+    port: int = Field(default=8080, description="Web server bind port")
+
+
+class AppConfig(BaseModel):
+    audio: AudioSettings = Field(default_factory=AudioSettings)
+    wled: WLEDSettings = Field(default_factory=WLEDSettings)
+    music_assistant: MusicAssistantSettings = Field(default_factory=MusicAssistantSettings)
+    web: WebSettings = Field(default_factory=WebSettings)
+
+
+def load_config(config_path: str = "config.yaml") -> AppConfig:
+    """Loads configuration from YAML file or returns defaults."""
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            logger.info(f"Loaded configuration from {config_path}")
+            return AppConfig(**data)
+        except Exception as e:
+            logger.error(f"Error reading {config_path}: {e}. Using defaults.")
+
+    config = AppConfig()
+    # Save default config template if missing
+    try:
+        save_config(config, config_path)
+    except Exception:
+        pass
+    return config
+
+
+def save_config(config: AppConfig, config_path: str = "config.yaml") -> None:
+    """Saves AppConfig back to YAML file."""
+    data = config.model_dump()
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)

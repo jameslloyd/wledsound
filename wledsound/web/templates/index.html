@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WLEDSound • Music Assistant WLED Sync</title>
+  <meta name="description" content="Synchronize WLED smart lighting with real-time music from Music Assistant via Snapcast and AudioReactive UDP/DDP streaming.">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand-section">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">WLEDSound</h1>
+          <div class="brand-subtitle">Music Assistant &bull; WLED Audio Sync Engine</div>
+        </div>
+      </div>
+
+      <div class="header-badges">
+        <div class="badge" id="snapcastBadge">
+          <span class="badge-dot"></span>
+          <span>Audio Ingest</span>
+        </div>
+        <div class="badge" id="massBadge">
+          <span class="badge-dot"></span>
+          <span>Music Assistant</span>
+        </div>
+        <div class="badge active-mode" id="modeBadge">
+          Mode: HYBRID
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="dashboard-grid">
+      <!-- Left: Real-time Visualizer -->
+      <section class="glass-card visualizer-card" aria-label="Audio Visualizer">
+        <div class="card-header">
+          <h2 class="card-title">
+            <span class="card-title-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M4 9h2v6H4zm4-5h2v16H8zm4 7h2v2h-2zm4-4h2v10h-2zm4 2h2v6h-2z"/>
+              </svg>
+            </span>
+            Real-time Spectrum &amp; Beat
+          </h2>
+          <div class="beat-pill" id="beatPill">
+            <span class="beat-bulb" id="beatBulb"></span>
+            <span>BEAT PULSE</span>
+          </div>
+        </div>
+
+        <div class="canvas-container">
+          <canvas id="visualizerCanvas"></canvas>
+          <div class="canvas-stats-overlay">
+            <div class="stat-item">FPS: <span class="stat-val" id="statFps">60</span></div>
+            <div class="stat-item">Peak: <span class="stat-val" id="statPeakFreq">120 Hz</span></div>
+            <div class="stat-item">RMS: <span class="stat-val" id="statRms">-12 dB</span></div>
+          </div>
+        </div>
+
+        <!-- Controls Card Grid inside left col -->
+        <div class="controls-card">
+          <h2 class="card-title" style="margin-bottom: 16px;">
+            <span class="card-title-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
+              </svg>
+            </span>
+            DSP &amp; Signal Tuning
+          </h2>
+
+          <div class="controls-grid">
+            <!-- Audio Gain -->
+            <div class="control-group">
+              <div class="control-header">
+                <label for="gainSlider" class="control-label">Audio Sensitivity (Gain)</label>
+                <span class="control-val" id="gainVal">1.0x</span>
+              </div>
+              <input type="range" id="gainSlider" min="0.2" max="4.0" step="0.1" value="1.0">
+            </div>
+
+            <!-- Smoothing -->
+            <div class="control-group">
+              <div class="control-header">
+                <label for="smoothSlider" class="control-label">Level Smoothing</label>
+                <span class="control-val" id="smoothVal">0.25</span>
+              </div>
+              <input type="range" id="smoothSlider" min="0.05" max="0.75" step="0.05" value="0.25">
+            </div>
+
+            <!-- Squelch / Noise Gate -->
+            <div class="control-group">
+              <div class="control-header">
+                <label for="squelchSlider" class="control-label">Noise Floor (Squelch)</label>
+                <span class="control-val" id="squelchVal">0.005</span>
+              </div>
+              <input type="range" id="squelchSlider" min="0.0" max="0.05" step="0.002" value="0.005">
+            </div>
+          </div>
+        </div>
+
+        <!-- Mode & Effect Selection -->
+        <div class="controls-grid" style="margin-top: 16px;">
+          <!-- Output Mode -->
+          <div class="control-group">
+            <div class="control-label">WLED Output Protocol</div>
+            <div class="segmented-control" role="group" aria-label="WLED Output Protocol">
+              <button type="button" class="seg-btn mode-btn active" data-mode="hybrid" id="btnModeHybrid">Hybrid (Both)</button>
+              <button type="button" class="seg-btn mode-btn" data-mode="audiosync" id="btnModeAudioSync">AudioSync UDP</button>
+              <button type="button" class="seg-btn mode-btn" data-mode="ddp" id="btnModeDdp">DDP Pixels</button>
+            </div>
+          </div>
+
+          <!-- Audio Capture Source -->
+          <div class="control-group">
+            <div class="control-label">Audio Ingest Source</div>
+            <div class="segmented-control" role="group" aria-label="Audio Ingest Source">
+              <button type="button" class="seg-btn source-btn active" data-source="snapclient" id="btnSourceSnapclient">Snapcast</button>
+              <button type="button" class="seg-btn source-btn" data-source="fifo" id="btnSourceFifo">Pipe FIFO</button>
+              <button type="button" class="seg-btn source-btn" data-source="test" id="btnSourceTest">Synthetic Beat</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Visualizer Effect (DDP) -->
+        <div class="control-group" style="margin-top: 16px;">
+          <div class="control-label">DDP Visualizer Effect Pattern</div>
+          <div class="segmented-control" style="flex-wrap: wrap;" role="group" aria-label="Visualizer Effect">
+            <button type="button" class="seg-btn effect-btn active" data-effect="album_pulse" id="btnEffectPulse">Album Pulse</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="geq_spectrum" id="btnEffectGeq">16-Band GEQ</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="energy_wave" id="btnEffectWave">Energy Wave</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="vu_meter" id="btnEffectVu">VU Meter</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="beat_flash" id="btnEffectFlash">Beat Drop Flash</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Now Playing & Palette -->
+      <aside class="glass-card now-playing-card" aria-label="Now Playing Track">
+        <div class="card-header">
+          <h2 class="card-title">
+            <span class="card-title-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+              </svg>
+            </span>
+            Music Assistant
+          </h2>
+          <div class="state-pill idle" id="playbackStatePill">IDLE</div>
+        </div>
+
+        <!-- Album Artwork with dynamic ambient backglow -->
+        <div class="album-art-wrapper">
+          <div class="album-art-backdrop" id="albumBackdrop"></div>
+          <img 
+            id="albumImg" 
+            class="album-art-img" 
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23121624'/%3E%3Ccircle cx='50' cy='50' r='20' fill='%23ff2864' opacity='0.3'/%3E%3Cpath d='M45 40v20l15-10z' fill='%2300e5ff'/%3E%3C/svg%3E" 
+            alt="Album Artwork"
+          >
+        </div>
+
+        <!-- Track Metadata -->
+        <div class="track-meta">
+          <div class="track-title" id="trackTitle">No Track Playing</div>
+          <div class="track-artist" id="trackArtist">Waiting for Music Assistant</div>
+          <div class="track-album" id="trackAlbum">Local Stream</div>
+        </div>
+
+        <!-- Palette Swatches -->
+        <div class="palette-section">
+          <div class="palette-label">Extracted Artwork Palette</div>
+          <div class="palette-swatches" id="paletteSwatches">
+            <div class="palette-swatch" style="background-color: #ff7800;" title="#ff7800"></div>
+            <div class="palette-swatch" style="background-color: #ff2864;" title="#ff2864"></div>
+            <div class="palette-swatch" style="background-color: #00e5ff;" title="#00e5ff"></div>
+            <div class="palette-swatch" style="background-color: #a032ff;" title="#a032ff"></div>
+            <div class="palette-swatch" style="background-color: #141420;" title="#141420"></div>
+          </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div style="margin-top: 10px;">
+          <div class="palette-label" style="margin-bottom: 8px;">Hardware Quick Actions</div>
+          <div class="btn-row">
+            <button type="button" class="btn btn-outline" id="btnTestFlash">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 2v11h3v9l7-12h-4l4-8z"/>
+              </svg>
+              Test Flash
+            </button>
+            <button type="button" class="btn btn-outline" id="btnTogglePower">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>
+              </svg>
+              Toggle Power
+            </button>
+            <button type="button" class="btn btn-primary" id="btnSyncPalette">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3c-4.97 0-9 4.03-9 9 0 2.12.74 4.07 1.97 5.61L4.35 19.4c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l1.9-1.9C9.22 19.57 10.56 20 12 20c4.97 0 9-4.03 9-9s-4.03-9-9-9zm0 15c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z"/>
+              </svg>
+              Sync Palette
+            </button>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>WLEDSound Service &bull; High Performance Audio Synchronization &bull; Open Home Foundation Compatible</p>
+    </footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
