@@ -6,8 +6,9 @@ import time
 import signal
 import asyncio
 import logging
+import collections
 import uvicorn
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, Tuple
 
 from .config import AppConfig, load_config, save_config, WLEDDeviceConfig, WLEDSegmentConfig
 from .audio.types import AudioFeatures, TrackInfo
@@ -47,6 +48,7 @@ class ServiceCoordinator:
         self._last_telemetry_time = 0.0
         self._last_audio_chunk_time = 0.0
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._audio_queue: collections.deque[Tuple[float, bytes]] = collections.deque(maxlen=200)
 
         # Initialize Subsystems
         self._init_dsp()
@@ -126,7 +128,8 @@ class ServiceCoordinator:
             snapserver_host=self.config.audio.snapserver_host,
             snapserver_port=self.config.audio.snapserver_port,
             fifo_path=self.config.audio.fifo_path,
-            sample_rate=self.config.audio.sample_rate
+            sample_rate=self.config.audio.sample_rate,
+            sync_offset_ms=self.config.audio.sync_offset_ms,
         )
 
     def set_telemetry_broadcaster(self, broadcaster: Callable[[Dict[str, Any]], Any]) -> None:
@@ -152,6 +155,7 @@ class ServiceCoordinator:
             "mass_connected": mass_online,
             "audio_active": (time.perf_counter() - self._last_audio_chunk_time < 1.0),
             "sync_enabled": self.config.wled.sync_enabled,
+            "sync_offset_ms": self.config.audio.sync_offset_ms,
             "wled_mode": self.config.wled.mode,
             "palette_mode": self.visualizer.palette_name,
             "active_palette": [list(c) for c in active_palette],
@@ -176,8 +180,27 @@ class ServiceCoordinator:
 
     def _on_audio_chunk(self, pcm_bytes: bytes) -> None:
         """Fast real-time audio chunk processor invoked every ~20ms."""
-        self._last_audio_chunk_time = time.perf_counter()
+        now = time.perf_counter()
+        self._last_audio_chunk_time = now
 
+        target_delay = max(0.0, self.config.audio.sync_offset_ms / 1000.0)
+
+        # If positive offset delay is configured, queue chunk and release when target delay has elapsed
+        if target_delay > 0.0:
+            self._audio_queue.append((now, pcm_bytes))
+            ready_pcm = None
+            while self._audio_queue and (now - self._audio_queue[0][0] >= target_delay):
+                _, ready_pcm = self._audio_queue.popleft()
+            if ready_pcm is not None:
+                self._dispatch_audio_frame(ready_pcm)
+        else:
+            # 0ms or negative offset: clear any residual delayed frames and dispatch immediately
+            if self._audio_queue:
+                self._audio_queue.clear()
+            self._dispatch_audio_frame(pcm_bytes)
+
+    def _dispatch_audio_frame(self, pcm_bytes: bytes) -> None:
+        """Processes an audio chunk through DSP, updates telemetry, and sends WLED packets."""
         # 1. DSP Analysis (always compute features for live web UI visualizer)
         features = self.dsp.process_pcm(pcm_bytes)
         self.current_features = features
@@ -421,6 +444,9 @@ class ServiceCoordinator:
             self.dsp.gain = self.config.audio.gain
             self.dsp.squelch = self.config.audio.squelch
             self.dsp.smoothing_factor = self.config.audio.smoothing
+            # Update capture sync_offset_ms
+            if hasattr(self, "capture") and hasattr(self.capture, "sync_offset_ms"):
+                self.capture.sync_offset_ms = self.config.audio.sync_offset_ms
             # Restart capture if mode changed
             if "mode" in patch["audio"]:
                 self.capture.stop()
@@ -440,6 +466,18 @@ class ServiceCoordinator:
 
         # Save updated config
         save_config(self.config, self.config_path)
+        self._broadcast_frame(self.get_telemetry_frame())
+
+    def set_sync_offset(self, offset_ms: int) -> int:
+        """Sets the audio beat sync timing offset in ms and persists to config."""
+        offset_ms = int(max(-250, min(1000, offset_ms)))
+        self.config.audio.sync_offset_ms = offset_ms
+        if hasattr(self, "capture") and hasattr(self.capture, "sync_offset_ms"):
+            self.capture.sync_offset_ms = offset_ms
+        save_config(self.config, self.config_path)
+        self._broadcast_frame(self.get_telemetry_frame())
+        logger.info(f"Beat sync timing offset updated to: {offset_ms:+d} ms")
+        return offset_ms
 
     def toggle_sync(self, enabled: Optional[bool] = None) -> bool:
         """Toggles or explicitly sets the LED audio synchronization state."""
@@ -460,6 +498,7 @@ class ServiceCoordinator:
                 "gain": self.config.audio.gain,
                 "squelch": self.config.audio.squelch,
                 "smoothing": self.config.audio.smoothing,
+                "sync_offset_ms": self.config.audio.sync_offset_ms,
                 "rms": round(self.current_features.rms_energy, 4)
             },
             "wled": {

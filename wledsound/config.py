@@ -20,6 +20,7 @@ class AudioSettings(BaseModel):
     snapserver_port: int = Field(default=1704, description="Snapserver stream port")
     fifo_path: str = Field(default="/tmp/snapfifo", description="Named pipe path if using FIFO mode")
     sample_rate: int = Field(default=44100, description="PCM audio sample rate in Hz")
+    sync_offset_ms: int = Field(default=0, description="Audio/LED beat synchronization timing offset in milliseconds (-250 to +1000ms)")
     gain: float = Field(default=1.0, description="Master audio gain multiplier (0.1 - 5.0)")
     squelch: float = Field(default=0.005, description="Silence/noise floor threshold (0.0 - 0.1)")
     agc_enabled: bool = Field(default=True, description="Automatic Gain Control")

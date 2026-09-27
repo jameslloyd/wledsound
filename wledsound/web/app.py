@@ -48,6 +48,16 @@ def create_web_app(coordinator: Any) -> FastAPI:
         coordinator.apply_config_patch(patch.model_dump(exclude_none=True))
         return {"status": "ok", "config": coordinator.config.model_dump()}
 
+    @app.post("/api/audio/offset")
+    async def set_audio_offset(request: Request):
+        try:
+            payload = await request.json()
+            offset_ms = int(payload.get("offset_ms", 0))
+        except Exception:
+            offset_ms = 0
+        new_val = coordinator.set_sync_offset(offset_ms)
+        return {"status": "ok", "sync_offset_ms": new_val}
+
     @app.post("/api/wled/power")
     async def toggle_power():
         success = await coordinator.toggle_wled_power()

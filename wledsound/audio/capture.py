@@ -29,6 +29,7 @@ class AudioCapture:
         sample_rate: int = 44100,
         channels: int = 2,
         frame_duration_ms: int = 20,
+        sync_offset_ms: int = 0,
     ):
         self.mode = mode.lower()
         self.squeezelite_host = squeezelite_host
@@ -41,6 +42,7 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.channels = channels
         self.frame_duration_ms = frame_duration_ms
+        self.sync_offset_ms = sync_offset_ms
 
         # Calculate bytes per frame: (sample_rate * duration_sec) * channels * 2 bytes/sample
         self.samples_per_frame = int(self.sample_rate * (self.frame_duration_ms / 1000.0))
@@ -147,11 +149,13 @@ class AudioCapture:
             if len(raw_chunk) == self.bytes_per_frame and self._callback:
                 self._callback(raw_chunk)
 
-            target_time = clock_start + (frames_read * frame_interval)
+            # If sync_offset_ms is negative (advance beat pulses), read up to 250ms ahead from Squeezelite pipe buffer
+            lead_time = min(0.250, max(0.0, -self.sync_offset_ms / 1000.0)) if self.sync_offset_ms < 0 else 0.0
+            target_time = (clock_start - lead_time) + (frames_read * frame_interval)
             wait = target_time - time.perf_counter()
             if wait > 0:
                 time.sleep(wait)
-            elif wait < -0.15:
+            elif wait < -(lead_time + 0.15):
                 # Reset clock anchor after gap/pause/buffer reset
                 clock_start = time.perf_counter()
                 frames_read = 0

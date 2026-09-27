@@ -48,6 +48,8 @@
   const smoothVal = document.getElementById('smoothVal');
   const squelchSlider = document.getElementById('squelchSlider');
   const squelchVal = document.getElementById('squelchVal');
+  const offsetSlider = document.getElementById('offsetSlider');
+  const offsetValBadge = document.getElementById('offsetValBadge');
 
   const snapcastBadge = document.getElementById('snapcastBadge');
   const massBadge = document.getElementById('massBadge');
@@ -56,6 +58,26 @@
   const syncStatusText = document.getElementById('syncStatusText');
   const btnActionToggleSync = document.getElementById('btnActionToggleSync');
   const actionSyncText = document.getElementById('actionSyncText');
+
+  // Beat Sync Timing Offset UI updater
+  function updateOffsetUI(offsetMs) {
+    if (offsetValBadge) {
+      offsetValBadge.classList.remove('in-sync', 'delayed', 'advanced');
+      if (offsetMs === 0) {
+        offsetValBadge.textContent = '0 ms (Realtime)';
+        offsetValBadge.classList.add('in-sync');
+      } else if (offsetMs > 0) {
+        offsetValBadge.textContent = `+${offsetMs} ms (Delayed)`;
+        offsetValBadge.classList.add('delayed');
+      } else {
+        offsetValBadge.textContent = `${offsetMs} ms (Advanced)`;
+        offsetValBadge.classList.add('advanced');
+      }
+    }
+    if (offsetSlider && document.activeElement !== offsetSlider) {
+      offsetSlider.value = offsetMs;
+    }
+  }
 
   // Master LED Sync state UI updater
   function updateSyncUI(enabled) {
@@ -181,6 +203,11 @@
     // LED Sync Master Toggle
     if (data.sync_enabled !== undefined) {
       updateSyncUI(data.sync_enabled);
+    }
+
+    // Beat Sync Timing Offset
+    if (data.sync_offset_ms !== undefined) {
+      updateOffsetUI(data.sync_offset_ms);
     }
 
     // Palette selection & active swatches
@@ -464,6 +491,32 @@
         updateConfig({ audio: { squelch: val } });
       });
     }
+
+    // Beat Sync Timing Offset Slider
+    if (offsetSlider) {
+      offsetSlider.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value, 10);
+        updateOffsetUI(val);
+        updateConfig({ audio: { sync_offset_ms: val } });
+      });
+    }
+
+    // Offset Nudge Buttons
+    const nudgeBtns = document.querySelectorAll('.btn-nudge');
+    nudgeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        let current = offsetSlider ? parseInt(offsetSlider.value, 10) : 0;
+        if (btn.dataset.set !== undefined) {
+          current = parseInt(btn.dataset.set, 10);
+        } else if (btn.dataset.nudge !== undefined) {
+          current += parseInt(btn.dataset.nudge, 10);
+        }
+        current = Math.max(-250, Math.min(750, current));
+        updateOffsetUI(current);
+        if (offsetSlider) offsetSlider.value = current;
+        updateConfig({ audio: { sync_offset_ms: current } });
+      });
+    });
 
     // LED Sync Master Toggle Buttons
     if (btnSyncToggle) {
@@ -837,6 +890,9 @@
           if (squelchSlider && data.audio.squelch !== undefined) {
             squelchSlider.value = data.audio.squelch;
             if (squelchVal) squelchVal.textContent = data.audio.squelch.toFixed(3);
+          }
+          if (data.audio.sync_offset_ms !== undefined) {
+            updateOffsetUI(data.audio.sync_offset_ms);
           }
         }
         if (data.wled) {
