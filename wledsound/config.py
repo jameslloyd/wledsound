@@ -19,7 +19,7 @@ class AudioSettings(BaseModel):
     snapserver_host: str = Field(default="127.0.0.1", description="Snapserver hostname or IP")
     snapserver_port: int = Field(default=1704, description="Snapserver stream port")
     fifo_path: str = Field(default="/tmp/snapfifo", description="Named pipe path if using FIFO mode")
-    sample_rate: int = Field(default=48000, description="PCM audio sample rate in Hz")
+    sample_rate: int = Field(default=44100, description="PCM audio sample rate in Hz")
     gain: float = Field(default=1.0, description="Master audio gain multiplier (0.1 - 5.0)")
     squelch: float = Field(default=0.005, description="Silence/noise floor threshold (0.0 - 0.1)")
     agc_enabled: bool = Field(default=True, description="Automatic Gain Control")
@@ -53,7 +53,8 @@ class WLEDDeviceConfig(BaseModel):
 
 
 class WLEDSettings(BaseModel):
-    mode: str = Field(default="hybrid", description="Output mode: 'hybrid', 'audiosync', or 'ddp'")
+    sync_enabled: bool = Field(default=True, description="Master enable toggle for LED audio synchronization")
+    mode: str = Field(default="hybrid", description="Output mode: 'hybrid', 'audiosync', 'ddp', or 'off'")
     audiosync_targets: List[str] = Field(
         default_factory=lambda: ["239.0.0.1"],
         description="IP addresses to send AudioReactive UDP packets to (multicast or unicast)"

@@ -52,6 +52,53 @@
   const snapcastBadge = document.getElementById('snapcastBadge');
   const massBadge = document.getElementById('massBadge');
   const modeBadge = document.getElementById('modeBadge');
+  const btnSyncToggle = document.getElementById('btnSyncToggle');
+  const syncStatusText = document.getElementById('syncStatusText');
+  const btnActionToggleSync = document.getElementById('btnActionToggleSync');
+  const actionSyncText = document.getElementById('actionSyncText');
+
+  // Master LED Sync state UI updater
+  function updateSyncUI(enabled) {
+    if (btnSyncToggle) {
+      btnSyncToggle.classList.toggle('active', !!enabled);
+      btnSyncToggle.classList.toggle('disabled', !enabled);
+      btnSyncToggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
+    }
+    if (syncStatusText) {
+      syncStatusText.textContent = enabled ? 'ON' : 'OFF';
+      syncStatusText.style.color = enabled ? 'var(--color-success)' : 'var(--color-danger)';
+    }
+    if (actionSyncText) {
+      actionSyncText.textContent = enabled ? 'Pause Sync' : 'Resume Sync';
+    }
+    if (btnActionToggleSync) {
+      btnActionToggleSync.classList.toggle('btn-primary', !enabled);
+      btnActionToggleSync.classList.toggle('btn-outline', !!enabled);
+    }
+    if (modeBadge && !enabled) {
+      modeBadge.textContent = 'Mode: SYNC OFF';
+      modeBadge.style.borderColor = 'rgba(255, 77, 109, 0.4)';
+      modeBadge.style.color = 'var(--color-danger)';
+    }
+  }
+
+  // Toggle master LED sync via API
+  async function toggleLedSync(explicitVal = null) {
+    try {
+      const payload = explicitVal !== null ? { enabled: explicitVal } : {};
+      const resp = await fetch('/api/wled/sync-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        updateSyncUI(data.sync_enabled);
+      }
+    } catch (e) {
+      console.error('Failed to toggle LED sync:', e);
+    }
+  }
 
   // Resize canvas for sharp high-DPI rendering
   function resizeCanvas() {
@@ -129,6 +176,11 @@
     }
     if (snapcastBadge && data.audio_active !== undefined) {
       snapcastBadge.classList.toggle('online', !!data.audio_active);
+    }
+
+    // LED Sync Master Toggle
+    if (data.sync_enabled !== undefined) {
+      updateSyncUI(data.sync_enabled);
     }
 
     // Palette selection & active swatches
@@ -413,6 +465,14 @@
       });
     }
 
+    // LED Sync Master Toggle Buttons
+    if (btnSyncToggle) {
+      btnSyncToggle.addEventListener('click', () => toggleLedSync());
+    }
+    if (btnActionToggleSync) {
+      btnActionToggleSync.addEventListener('click', () => toggleLedSync());
+    }
+
     // Output Mode Segmented Control
     const modeBtns = document.querySelectorAll('.mode-btn');
     modeBtns.forEach(btn => {
@@ -420,8 +480,18 @@
         modeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const mode = btn.dataset.mode;
-        if (modeBadge) modeBadge.textContent = `Mode: ${mode.toUpperCase()}`;
-        updateConfig({ wled: { mode: mode } });
+        if (mode === 'off') {
+          updateConfig({ wled: { mode: 'off', sync_enabled: false } });
+          updateSyncUI(false);
+        } else {
+          updateConfig({ wled: { mode: mode, sync_enabled: true } });
+          updateSyncUI(true);
+          if (modeBadge) {
+            modeBadge.textContent = `Mode: ${mode.toUpperCase()}`;
+            modeBadge.style.borderColor = 'rgba(0, 229, 255, 0.3)';
+            modeBadge.style.color = 'var(--color-primary)';
+          }
+        }
       });
     });
 
@@ -770,10 +840,15 @@
           }
         }
         if (data.wled) {
+          if (data.wled.sync_enabled !== undefined) {
+            updateSyncUI(data.wled.sync_enabled);
+          }
           if (data.wled.mode) {
             const modeBtns = document.querySelectorAll('.mode-btn');
             modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === data.wled.mode));
-            if (modeBadge) modeBadge.textContent = `Mode: ${data.wled.mode.toUpperCase()}`;
+            if (data.wled.sync_enabled !== false && modeBadge) {
+              modeBadge.textContent = `Mode: ${data.wled.mode.toUpperCase()}`;
+            }
           }
           if (data.wled.effect) {
             const effectBtns = document.querySelectorAll('.effect-btn');

@@ -26,7 +26,7 @@ class AudioCapture:
         snapserver_host: str = "127.0.0.1",
         snapserver_port: int = 1704,
         fifo_path: str = "/tmp/snapfifo",
-        sample_rate: int = 48000,
+        sample_rate: int = 44100,
         channels: int = 2,
         frame_duration_ms: int = 20,
     ):
@@ -107,7 +107,8 @@ class AudioCapture:
             "-m", self.mac_address,
             "-o", "-",
             "-a", "16",
-            "-b", "512:1024",
+            "-b", "2048:3445",
+            "-R", "-u",
             "-r", f"{self.sample_rate}",
             "-f", "/tmp/squeezelite.log",
             "-d", "all=info"
@@ -125,14 +126,35 @@ class AudioCapture:
             self.mode = "test"
             return
 
+        frame_interval = self.frame_duration_ms / 1000.0
+        clock_start = None
+        frames_read = 0
+
         while self._running and self._process.poll() is None:
             if not self._process.stdout:
                 break
             raw_chunk = self._process.stdout.read(self.bytes_per_frame)
             if not raw_chunk:
                 break
+
+            now = time.perf_counter()
+            if clock_start is None:
+                clock_start = now
+                frames_read = 0
+
+            frames_read += 1
+
             if len(raw_chunk) == self.bytes_per_frame and self._callback:
                 self._callback(raw_chunk)
+
+            target_time = clock_start + (frames_read * frame_interval)
+            wait = target_time - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
+            elif wait < -0.15:
+                # Reset clock anchor after gap/pause/buffer reset
+                clock_start = time.perf_counter()
+                frames_read = 0
 
         if self._process:
             logger.warning(f"squeezelite exited with code {self._process.returncode}. Reconnecting in 2s...")

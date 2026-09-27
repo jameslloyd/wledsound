@@ -166,6 +166,56 @@ body {
   color: var(--color-primary);
 }
 
+/* Interactive Master Sync Toggle Badge */
+.sync-toggle-badge {
+  cursor: pointer;
+  user-select: none;
+  background: rgba(0, 255, 160, 0.08);
+  border: 1px solid rgba(0, 255, 160, 0.35);
+  color: #e6fff5;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: inherit;
+  outline: none;
+}
+
+.sync-toggle-badge:hover {
+  transform: translateY(-1px);
+  background: rgba(0, 255, 160, 0.15);
+  border-color: rgba(0, 255, 160, 0.55);
+  box-shadow: 0 0 15px rgba(0, 255, 160, 0.25);
+}
+
+.sync-toggle-badge:active {
+  transform: translateY(0);
+}
+
+.sync-toggle-badge:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-primary);
+}
+
+.sync-toggle-badge .sync-dot {
+  background-color: var(--color-success);
+  box-shadow: 0 0 8px var(--color-success);
+  transition: all 0.25s ease;
+}
+
+.sync-toggle-badge.disabled {
+  background: rgba(255, 77, 109, 0.08);
+  border-color: rgba(255, 77, 109, 0.35);
+  color: #ffccd5;
+}
+
+.sync-toggle-badge.disabled:hover {
+  background: rgba(255, 77, 109, 0.15);
+  border-color: rgba(255, 77, 109, 0.55);
+  box-shadow: 0 0 15px rgba(255, 77, 109, 0.25);
+}
+
+.sync-toggle-badge.disabled .sync-dot {
+  background-color: var(--color-danger);
+  box-shadow: 0 0 8px var(--color-danger);
+}
+
 /* Dashboard Grid Layout */
 .dashboard-grid {
   display: grid;

@@ -32,7 +32,9 @@ logger = logging.getLogger("wledsound")
 class ServiceCoordinator:
     """Central orchestrator managing audio ingest, DSP analysis, WLED outputs, and MA sync."""
 
-    def __init__(self, config: AppConfig, config_path: str = "config.yaml"):
+    def __init__(self, config: Optional[AppConfig] = None, config_path: str = "config.yaml"):
+        if config is None:
+            config = load_config(config_path)
         self.config = config
         self.config_path = config_path
 
@@ -149,6 +151,8 @@ class ServiceCoordinator:
             "waveform": features.waveform_preview,
             "mass_connected": mass_online,
             "audio_active": (time.perf_counter() - self._last_audio_chunk_time < 1.0),
+            "sync_enabled": self.config.wled.sync_enabled,
+            "wled_mode": self.config.wled.mode,
             "palette_mode": self.visualizer.palette_name,
             "active_palette": [list(c) for c in active_palette],
             "available_palettes": get_palette_definitions(),
@@ -174,9 +178,17 @@ class ServiceCoordinator:
         """Fast real-time audio chunk processor invoked every ~20ms."""
         self._last_audio_chunk_time = time.perf_counter()
 
-        # 1. DSP Analysis
+        # 1. DSP Analysis (always compute features for live web UI visualizer)
         features = self.dsp.process_pcm(pcm_bytes)
         self.current_features = features
+
+        # Skip WLED hardware packet streaming if sync is disabled or mode is off
+        if not self.config.wled.sync_enabled or self.config.wled.mode.lower() == "off":
+            now = time.perf_counter()
+            if self._telemetry_broadcaster and (now - self._last_telemetry_time >= 0.025):
+                self._last_telemetry_time = now
+                self._broadcast_frame(self.get_telemetry_frame())
+            return
 
         mode = self.config.wled.mode.lower()
 
@@ -429,6 +441,17 @@ class ServiceCoordinator:
         # Save updated config
         save_config(self.config, self.config_path)
 
+    def toggle_sync(self, enabled: Optional[bool] = None) -> bool:
+        """Toggles or explicitly sets the LED audio synchronization state."""
+        if enabled is None:
+            self.config.wled.sync_enabled = not self.config.wled.sync_enabled
+        else:
+            self.config.wled.sync_enabled = bool(enabled)
+        logger.info(f"LED synchronization is now: {'ENABLED' if self.config.wled.sync_enabled else 'PAUSED/OFF'}")
+        save_config(self.config, self.config_path)
+        self._broadcast_frame(self.get_telemetry_frame())
+        return self.config.wled.sync_enabled
+
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive status dictionary."""
         return {
@@ -440,6 +463,7 @@ class ServiceCoordinator:
                 "rms": round(self.current_features.rms_energy, 4)
             },
             "wled": {
+                "sync_enabled": self.config.wled.sync_enabled,
                 "mode": self.config.wled.mode,
                 "audiosync_targets": self.config.wled.audiosync_targets,
                 "ddp_targets": self.config.wled.ddp_targets,

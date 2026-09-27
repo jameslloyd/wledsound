@@ -30,6 +30,10 @@
       </div>
 
       <div class="header-badges">
+        <button type="button" class="badge sync-toggle-badge active" id="btnSyncToggle" role="switch" aria-checked="true" title="Click to turn WLED audio synchronization on or off">
+          <span class="badge-dot sync-dot"></span>
+          <span class="sync-label">LED Sync: <strong id="syncStatusText">ON</strong></span>
+        </button>
         <div class="badge" id="snapcastBadge">
           <span class="badge-dot"></span>
           <span>Audio Ingest</span>
@@ -122,6 +126,7 @@
               <button type="button" class="seg-btn mode-btn active" data-mode="hybrid" id="btnModeHybrid">Hybrid (Both)</button>
               <button type="button" class="seg-btn mode-btn" data-mode="audiosync" id="btnModeAudioSync">AudioSync UDP</button>
               <button type="button" class="seg-btn mode-btn" data-mode="ddp" id="btnModeDdp">DDP Pixels</button>
+              <button type="button" class="seg-btn mode-btn" data-mode="off" id="btnModeOff">Off (Mute Sync)</button>
             </div>
           </div>
 
@@ -270,6 +275,12 @@
         <div style="margin-top: 10px;">
           <div class="palette-label" style="margin-bottom: 8px;">Hardware Quick Actions</div>
           <div class="btn-row">
+            <button type="button" class="btn btn-outline" id="btnActionToggleSync" title="Pause or resume LED audio synchronization">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
+              </svg>
+              <span id="actionSyncText">Pause Sync</span>
+            </button>
             <button type="button" class="btn btn-outline" id="btnTestFlash">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M7 2v11h3v9l7-12h-4l4-8z"/>

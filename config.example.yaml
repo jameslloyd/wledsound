@@ -18,10 +18,14 @@ audio:
   smoothing: 0.25     # Exponential smoothing (0.05 = slow/gentle, 0.5 = snappy)
 
 wled:
+  # Master toggle to enable or pause real-time LED audio synchronization:
+  sync_enabled: true
+
   # Output mode:
   # - "hybrid": Sends AudioReactive UDP packets AND streams DDP pixels
   # - "audiosync": WLED AudioReactive UDP multicast only (drives native WLED sound effects)
   # - "ddp": Direct DDP pixel streaming only (streams custom visualizers to any WLED strip)
+  # - "off": Disable/pause all LED synchronization
   mode: "hybrid"
 
   # WLED AudioReactive UDP targets (default multicast 239.0.0.1:11988)

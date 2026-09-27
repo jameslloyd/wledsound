@@ -53,6 +53,18 @@ def create_web_app(coordinator: Any) -> FastAPI:
         success = await coordinator.toggle_wled_power()
         return {"status": "ok" if success else "error"}
 
+    @app.post("/api/wled/sync-toggle")
+    async def toggle_sync(request: Request):
+        enabled = None
+        try:
+            body = await request.json()
+            if isinstance(body, dict) and "enabled" in body:
+                enabled = body["enabled"]
+        except Exception:
+            pass
+        new_state = coordinator.toggle_sync(enabled)
+        return {"status": "ok", "sync_enabled": new_state}
+
     @app.post("/api/wled/test-flash")
     async def test_flash():
         coordinator.trigger_test_flash()
