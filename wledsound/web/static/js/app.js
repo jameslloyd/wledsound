@@ -211,6 +211,9 @@
     }
 
     // Palette selection & active swatches
+    if (data.available_palettes) {
+      renderPalettes(data.available_palettes, data.palette_mode || currentPaletteMode);
+    }
     if (data.palette_mode !== undefined) {
       updateActivePaletteUI(data.palette_mode, data.active_palette);
     }
@@ -239,6 +242,95 @@
 
   // Active palette UI state
   let currentPaletteMode = 'album_art';
+  let currentAvailablePalettes = [];
+  let lastPalettesHash = '';
+
+  function renderPalettes(palettes, activePaletteMode) {
+    if (!palettes || !Array.isArray(palettes)) return;
+    currentAvailablePalettes = palettes;
+    const mode = activePaletteMode || currentPaletteMode;
+
+    const hash = JSON.stringify(palettes) + '-' + mode;
+    if (hash === lastPalettesHash) return;
+    lastPalettesHash = hash;
+
+    const grid = document.getElementById('paletteGrid');
+    if (!grid) return;
+
+    grid.innerHTML = '';
+
+    palettes.forEach(p => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = `palette-card ${p.id === mode ? 'active' : ''} ${p.is_custom ? 'custom' : ''}`;
+      card.dataset.palette = p.id;
+      card.id = `btnPalette_${p.id}`;
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'palette-card-name';
+      nameEl.textContent = p.name;
+      if (p.is_custom) {
+        const badge = document.createElement('span');
+        badge.className = 'palette-badge-custom';
+        badge.textContent = 'CUSTOM';
+        nameEl.appendChild(badge);
+      }
+      card.appendChild(nameEl);
+
+      const bar = document.createElement('div');
+      bar.className = 'palette-card-bar';
+      if (p.id === 'album_art') {
+        bar.style.background = 'linear-gradient(90deg, var(--palette-c1, #ff7800), var(--palette-c2, #ff2864), var(--palette-c3, #00e5ff))';
+      } else if (p.hex_colors && p.hex_colors.length >= 2) {
+        bar.style.background = `linear-gradient(90deg, ${p.hex_colors.join(', ')})`;
+      } else if (p.hex_colors && p.hex_colors.length === 1) {
+        bar.style.backgroundColor = p.hex_colors[0];
+      }
+      card.appendChild(bar);
+
+      // Delete button for custom palettes
+      if (p.is_custom) {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'palette-card-delete';
+        delBtn.title = `Delete custom palette "${p.name}"`;
+        delBtn.innerHTML = '&times;';
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteCustomPalette(p.id, p.name);
+        });
+        card.appendChild(delBtn);
+      }
+
+      card.addEventListener('click', async () => {
+        document.querySelectorAll('.palette-card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        currentPaletteMode = p.id;
+        if (activePaletteLabelEl) activePaletteLabelEl.textContent = p.name;
+        try {
+          await fetch(`/api/wled/palette/${p.id}`, { method: 'POST' });
+        } catch (e) {
+          console.error('Failed to set palette:', e);
+        }
+      });
+
+      grid.appendChild(card);
+    });
+
+    // Append "+ Custom" add card
+    const addCard = document.createElement('button');
+    addCard.type = 'button';
+    addCard.className = 'palette-card palette-card-add';
+    addCard.id = 'btnPaletteAddCard';
+    addCard.title = 'Create a new custom color palette';
+    addCard.innerHTML = `
+      <div class="palette-card-name" style="color: var(--color-primary); font-weight: 700;">+ Custom</div>
+      <div class="palette-card-bar" style="background: dashed 1px var(--color-primary); opacity: 0.7;"></div>
+    `;
+    addCard.addEventListener('click', openCustomPaletteModal);
+    grid.appendChild(addCard);
+  }
+
   function updateActivePaletteUI(paletteMode, activePalette) {
     currentPaletteMode = paletteMode;
     const paletteCards = document.querySelectorAll('.palette-card');
@@ -247,7 +339,7 @@
       c.classList.toggle('active', isCardActive);
       if (isCardActive && activePaletteLabelEl) {
         const nameEl = c.querySelector('.palette-card-name');
-        activePaletteLabelEl.textContent = nameEl ? nameEl.textContent : paletteMode;
+        activePaletteLabelEl.textContent = nameEl ? nameEl.childNodes[0].textContent.trim() : paletteMode;
       }
     });
 
@@ -256,13 +348,171 @@
         paletteSourceLabelEl.textContent = 'Active Artwork Palette (Auto)';
       } else {
         const matched = Array.from(paletteCards).find(c => c.dataset.palette === paletteMode);
-        const name = matched ? (matched.querySelector('.palette-card-name')?.textContent || paletteMode) : paletteMode;
+        const name = matched ? (matched.querySelector('.palette-card-name')?.childNodes[0].textContent.trim() || paletteMode) : paletteMode;
         paletteSourceLabelEl.textContent = `Preset Palette: ${name}`;
       }
     }
 
     if (activePalette && activePalette.length > 0) {
       updatePalette(activePalette);
+    }
+  }
+
+  // Custom Palette Creator State & Functions
+  let modalColorStops = ['#ff007f', '#00f0ff', '#ffe600'];
+
+  function openCustomPaletteModal() {
+    const modal = document.getElementById('customPaletteModal');
+    if (!modal) return;
+    modalColorStops = ['#ff007f', '#00f0ff', '#ffe600'];
+    const nameInput = document.getElementById('inputPaletteName');
+    if (nameInput) nameInput.value = '';
+    renderModalColorStops();
+    updateModalGradientPreview();
+    modal.style.display = 'flex';
+    if (nameInput) nameInput.focus();
+  }
+
+  function closeCustomPaletteModal() {
+    const modal = document.getElementById('customPaletteModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function renderModalColorStops() {
+    const list = document.getElementById('colorStopsList');
+    const btnAdd = document.getElementById('btnAddColorStop');
+    if (!list) return;
+    list.innerHTML = '';
+
+    modalColorStops.forEach((color, idx) => {
+      const row = document.createElement('div');
+      row.className = 'color-stop-row';
+
+      const num = document.createElement('span');
+      num.className = 'color-stop-num';
+      num.textContent = `#${idx + 1}`;
+
+      const picker = document.createElement('input');
+      picker.type = 'color';
+      picker.className = 'color-picker-input';
+      picker.value = color;
+
+      const hexText = document.createElement('input');
+      hexText.type = 'text';
+      hexText.className = 'form-input color-hex-input';
+      hexText.value = color.toUpperCase();
+      hexText.maxLength = 7;
+
+      picker.addEventListener('input', (e) => {
+        const val = e.target.value;
+        modalColorStops[idx] = val;
+        hexText.value = val.toUpperCase();
+        updateModalGradientPreview();
+      });
+
+      hexText.addEventListener('input', (e) => {
+        let val = e.target.value;
+        if (!val.startsWith('#')) val = '#' + val;
+        if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+          modalColorStops[idx] = val;
+          picker.value = val;
+          updateModalGradientPreview();
+        }
+      });
+
+      row.appendChild(num);
+      row.appendChild(picker);
+      row.appendChild(hexText);
+
+      if (modalColorStops.length > 2) {
+        const btnDel = document.createElement('button');
+        btnDel.type = 'button';
+        btnDel.className = 'btn-remove-stop';
+        btnDel.title = 'Remove color stop';
+        btnDel.textContent = '✕';
+        btnDel.addEventListener('click', () => {
+          modalColorStops.splice(idx, 1);
+          renderModalColorStops();
+          updateModalGradientPreview();
+        });
+        row.appendChild(btnDel);
+      }
+
+      list.appendChild(row);
+    });
+
+    if (btnAdd) {
+      btnAdd.disabled = (modalColorStops.length >= 6);
+    }
+  }
+
+  function updateModalGradientPreview() {
+    const preview = document.getElementById('modalGradientPreview');
+    if (!preview || modalColorStops.length === 0) return;
+    const stopsStr = modalColorStops.join(', ');
+    preview.style.background = `linear-gradient(90deg, ${stopsStr})`;
+  }
+
+  async function saveCustomPalette() {
+    const nameInput = document.getElementById('inputPaletteName');
+    const name = (nameInput?.value || '').trim();
+    if (!name) {
+      alert('Please enter a name for your custom palette.');
+      nameInput?.focus();
+      return;
+    }
+    if (modalColorStops.length < 2) {
+      alert('Please provide at least 2 colors.');
+      return;
+    }
+
+    const btnSave = document.getElementById('btnSaveCustomPalette');
+    if (btnSave) {
+      btnSave.disabled = true;
+      btnSave.textContent = 'Saving...';
+    }
+
+    try {
+      const resp = await fetch('/api/wled/palettes/custom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name,
+          colors: modalColorStops
+        })
+      });
+
+      if (resp.ok) {
+        const result = await resp.json();
+        const pId = result.palette.id;
+        const applyImmediately = document.getElementById('chkApplyImmediately')?.checked;
+        if (applyImmediately) {
+          await fetch(`/api/wled/palette/${pId}`, { method: 'POST' });
+        }
+        closeCustomPaletteModal();
+      } else {
+        alert('Failed to save custom palette.');
+      }
+    } catch (e) {
+      console.error('Error saving custom palette:', e);
+      alert('Error saving custom palette.');
+    } finally {
+      if (btnSave) {
+        btnSave.disabled = false;
+        btnSave.textContent = 'Save Palette';
+      }
+    }
+  }
+
+  async function deleteCustomPalette(paletteId, paletteName) {
+    if (!confirm(`Delete custom palette "${paletteName}"?`)) return;
+    try {
+      const resp = await fetch(`/api/wled/palettes/custom/${encodeURIComponent(paletteId)}`, {
+        method: 'DELETE'
+      });
+      if (!resp.ok) console.warn('Failed to delete custom palette');
+    } catch (e) {
+      console.error('Error deleting palette:', e);
     }
   }
 
@@ -647,6 +897,103 @@
         }
       });
     }
+
+    // Quick Action: Restore Defaults
+    const btnRestoreDefaults = document.getElementById('btnRestoreDefaults');
+    if (btnRestoreDefaults) {
+      btnRestoreDefaults.addEventListener('click', async () => {
+        const origHtml = btnRestoreDefaults.innerHTML;
+        btnRestoreDefaults.disabled = true;
+        btnRestoreDefaults.textContent = 'Restoring...';
+        try {
+          await fetch('/api/wled/restore-defaults', { method: 'POST' });
+          btnRestoreDefaults.textContent = 'Restored ✓';
+          setTimeout(() => {
+            btnRestoreDefaults.innerHTML = origHtml;
+            btnRestoreDefaults.disabled = false;
+          }, 1200);
+        } catch (e) {
+          console.error('Failed to restore defaults:', e);
+          btnRestoreDefaults.innerHTML = origHtml;
+          btnRestoreDefaults.disabled = false;
+        }
+      });
+    }
+
+    // Disconnect Behavior Settings
+    const selectDisconnectPreset = document.getElementById('selectDisconnectPreset');
+    const inputCustomDisconnectPreset = document.getElementById('inputCustomDisconnectPreset');
+    if (selectDisconnectPreset) {
+      selectDisconnectPreset.addEventListener('change', async (e) => {
+        const val = e.target.value;
+        if (val === 'custom') {
+          if (inputCustomDisconnectPreset) {
+            inputCustomDisconnectPreset.style.display = 'inline-block';
+            inputCustomDisconnectPreset.focus();
+          }
+        } else {
+          if (inputCustomDisconnectPreset) inputCustomDisconnectPreset.style.display = 'none';
+          const presetVal = (val === 'none') ? null : parseInt(val, 10);
+          await updateConfig({ wled: { default_preset: presetVal } });
+        }
+      });
+    }
+    if (inputCustomDisconnectPreset) {
+      inputCustomDisconnectPreset.addEventListener('change', async (e) => {
+        const p = parseInt(e.target.value, 10);
+        if (!isNaN(p) && p > 0) {
+          await updateConfig({ wled: { default_preset: p } });
+        }
+      });
+    }
+
+    // Custom Palette Modal Setup
+    const btnOpenNewPalette = document.getElementById('btnOpenNewPaletteModal');
+    if (btnOpenNewPalette) {
+      btnOpenNewPalette.addEventListener('click', openCustomPaletteModal);
+    }
+    const btnCloseModal = document.getElementById('btnClosePaletteModal');
+    if (btnCloseModal) {
+      btnCloseModal.addEventListener('click', closeCustomPaletteModal);
+    }
+    const btnCancelModal = document.getElementById('btnCancelPaletteModal');
+    if (btnCancelModal) {
+      btnCancelModal.addEventListener('click', closeCustomPaletteModal);
+    }
+    const btnAddStop = document.getElementById('btnAddColorStop');
+    if (btnAddStop) {
+      btnAddStop.addEventListener('click', () => {
+        if (modalColorStops.length < 6) {
+          const vibrantSeeds = ['#00e5ff', '#ff007f', '#ffe600', '#7b00ff', '#00ff88', '#ff4400'];
+          const nextColor = vibrantSeeds[modalColorStops.length % vibrantSeeds.length];
+          modalColorStops.push(nextColor);
+          renderModalColorStops();
+          updateModalGradientPreview();
+        }
+      });
+    }
+    const btnSavePalette = document.getElementById('btnSaveCustomPalette');
+    if (btnSavePalette) {
+      btnSavePalette.addEventListener('click', saveCustomPalette);
+    }
+
+    // Inspiration Seeds
+    const chipSeeds = document.querySelectorAll('.chip-seed');
+    chipSeeds.forEach(chip => {
+      chip.addEventListener('click', () => {
+        const colorsStr = chip.dataset.colors;
+        const nameStr = chip.dataset.name;
+        if (colorsStr) {
+          modalColorStops = colorsStr.split(',');
+          renderModalColorStops();
+          updateModalGradientPreview();
+        }
+        const nameInput = document.getElementById('inputPaletteName');
+        if (nameInput && nameStr) {
+          nameInput.value = nameStr;
+        }
+      });
+    });
   }
 
   // WLED Devices & Segments Rendering
@@ -657,6 +1004,10 @@
     { id: 'energy_wave', name: 'Energy Wave' },
     { id: 'vu_meter', name: 'VU Meter' },
     { id: 'beat_flash', name: 'Beat Drop Flash' },
+    { id: 'dj_chase', name: 'DJ Beat Chase' },
+    { id: 'dj_alternator', name: 'DJ Odd/Even Wash' },
+    { id: 'dj_blinder', name: 'DJ Strobe & Blinder' },
+    { id: 'dj_beams', name: 'DJ Frequency Beams' },
     { id: 'solid', name: 'Solid Ambient' },
     { id: 'off', name: 'Off (Dark)' }
   ];
@@ -766,30 +1117,49 @@
         paletteSelect.dataset.ip = dev.ip;
         paletteSelect.dataset.segId = seg.id;
 
-        const paletteOptions = [
-          { id: '', name: '🌐 Global Palette' },
-          { id: 'album_art', name: '🎨 Album Cover (Auto)' },
-          { id: 'cyberpunk', name: 'Cyberpunk Neon' },
-          { id: 'sunset', name: 'Sunset Fire' },
-          { id: 'vaporwave', name: 'Vaporwave Retro' },
-          { id: 'aurora', name: 'Aurora Borealis' },
-          { id: 'magma', name: 'Molten Magma' },
-          { id: 'forest', name: 'Emerald Forest' },
-          { id: 'glacial', name: 'Glacial Frost' },
-          { id: 'rainbow', name: 'Rainbow Prism' },
-          { id: 'candle', name: 'Warm Candle' }
-        ];
+        const optGlobal = document.createElement('option');
+        optGlobal.value = '';
+        optGlobal.textContent = '🌐 Global Palette';
+        if (!seg.palette || seg.palette === 'inherit') optGlobal.selected = true;
+        paletteSelect.appendChild(optGlobal);
 
-        paletteOptions.forEach(pOpt => {
+        const groupBuiltin = document.createElement('optgroup');
+        groupBuiltin.label = 'Built-in Concert Themes';
+
+        const groupCustom = document.createElement('optgroup');
+        groupCustom.label = 'Custom Palettes';
+
+        const palList = (currentAvailablePalettes && currentAvailablePalettes.length > 0)
+          ? currentAvailablePalettes
+          : [
+            { id: 'album_art', name: 'Album Cover (Auto)', is_custom: false },
+            { id: 'cyberpunk', name: 'Cyberpunk Neon', is_custom: false },
+            { id: 'sunset', name: 'Sunset Fire', is_custom: false },
+            { id: 'vaporwave', name: 'Vaporwave Retro', is_custom: false },
+            { id: 'aurora', name: 'Aurora Borealis', is_custom: false },
+            { id: 'magma', name: 'Molten Magma', is_custom: false },
+            { id: 'forest', name: 'Emerald Forest', is_custom: false },
+            { id: 'glacial', name: 'Glacial Frost', is_custom: false },
+            { id: 'rainbow', name: 'Rainbow Prism', is_custom: false },
+            { id: 'candle', name: 'Warm Candle', is_custom: false }
+          ];
+
+        palList.forEach(pOpt => {
           const opt = document.createElement('option');
           opt.value = pOpt.id;
-          opt.textContent = pOpt.name;
-          const currentPal = seg.palette || '';
-          if (currentPal === pOpt.id || (pOpt.id === '' && (!seg.palette || seg.palette === 'inherit'))) {
-            opt.selected = true;
+          opt.textContent = (pOpt.id === 'album_art' ? '🎨 ' : '') + pOpt.name;
+          if (seg.palette === pOpt.id) opt.selected = true;
+          if (pOpt.is_custom) {
+            groupCustom.appendChild(opt);
+          } else {
+            groupBuiltin.appendChild(opt);
           }
-          paletteSelect.appendChild(opt);
         });
+
+        paletteSelect.appendChild(groupBuiltin);
+        if (groupCustom.children.length > 0) {
+          paletteSelect.appendChild(groupCustom);
+        }
 
         paletteSelect.addEventListener('change', async (e) => {
           const newPal = e.target.value || null;
@@ -910,8 +1280,30 @@
             const effectBtns = document.querySelectorAll('.effect-btn');
             effectBtns.forEach(b => b.classList.toggle('active', b.dataset.effect === data.wled.effect));
           }
+          if (data.wled.available_palettes) {
+            renderPalettes(data.wled.available_palettes, data.wled.palette);
+          }
           if (data.wled.palette) {
             updateActivePaletteUI(data.wled.palette);
+          }
+          if (data.wled.default_preset !== undefined) {
+            const selDisc = document.getElementById('selectDisconnectPreset');
+            const inpDisc = document.getElementById('inputCustomDisconnectPreset');
+            if (selDisc) {
+              if (data.wled.default_preset === null) {
+                selDisc.value = 'none';
+                if (inpDisc) inpDisc.style.display = 'none';
+              } else if ([1, 2, 3, 4].includes(data.wled.default_preset)) {
+                selDisc.value = String(data.wled.default_preset);
+                if (inpDisc) inpDisc.style.display = 'none';
+              } else {
+                selDisc.value = 'custom';
+                if (inpDisc) {
+                  inpDisc.value = data.wled.default_preset;
+                  inpDisc.style.display = 'inline-block';
+                }
+              }
+            }
           }
           if (data.wled.devices) {
             renderDevicesList(data.wled.devices, data.wled.available_effects);

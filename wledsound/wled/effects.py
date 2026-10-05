@@ -12,6 +12,10 @@ AVAILABLE_EFFECTS = [
     {"id": "energy_wave", "name": "Energy Wave", "description": "Dynamic fluid wave shifting with audio energy"},
     {"id": "vu_meter", "name": "VU Meter", "description": "Classic responsive volume meter with color ramp"},
     {"id": "beat_flash", "name": "Beat Flash", "description": "Deep ambient baseline with explosive beat flashes"},
+    {"id": "dj_chase", "name": "DJ Beat Chase", "description": "8-fixture concert stage beam chasing to the beat"},
+    {"id": "dj_alternator", "name": "DJ Odd/Even Wash", "description": "Alternating odd vs even stage par cans on kick & snare"},
+    {"id": "dj_blinder", "name": "DJ Strobe & Blinder", "description": "High-impact stage crowd blinders with drop strobes"},
+    {"id": "dj_beams", "name": "DJ Frequency Beams", "description": "8 discrete lights mapped to sub, bass, mids, and treble"},
     {"id": "solid", "name": "Solid Ambient", "description": "Smooth breathing ambient light from palette"},
     {"id": "off", "name": "Off (Dark)", "description": "Keeps segment turned completely off/black"}
 ]
@@ -61,7 +65,7 @@ BUILTIN_PALETTES: Dict[str, Dict[str, Any]] = {
 }
 
 
-def get_palette_definitions() -> List[Dict[str, Any]]:
+def get_palette_definitions(custom_palettes: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Returns list of all available palette definitions for API and Web UI."""
     result = []
     for p_id, p_info in BUILTIN_PALETTES.items():
@@ -71,8 +75,20 @@ def get_palette_definitions() -> List[Dict[str, Any]]:
             "id": p_id,
             "name": p_info["name"],
             "hex_colors": hex_colors,
-            "is_dynamic": (p_info["colors"] is None)
+            "is_dynamic": (p_info["colors"] is None),
+            "is_custom": False
         })
+    if custom_palettes:
+        for p_id, p_info in custom_palettes.items():
+            colors = p_info.get("colors") or [(255, 255, 255)]
+            hex_colors = [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in colors]
+            result.append({
+                "id": p_id,
+                "name": p_info.get("name", p_id),
+                "hex_colors": hex_colors,
+                "is_dynamic": False,
+                "is_custom": True
+            })
     return result
 
 
@@ -95,6 +111,56 @@ def scale_color(color: Tuple[int, int, int], brightness: float) -> Tuple[int, in
     )
 
 
+def map_to_fixtures(
+    fixture_levels: List[float],
+    fixture_colors: List[Tuple[int, int, int]],
+    count: int,
+    num_fixtures: int = 8,
+    gap_ratio: float = 0.14,
+    ambient_color: Optional[Tuple[int, int, int]] = None
+) -> List[Tuple[int, int, int]]:
+    """Maps discrete virtual fixture intensities and colors across a continuous strip.
+    
+    Creates authentic stage lighting optics:
+    - Center beam hot-spot for each fixture.
+    - Soft beam falloff towards fixture boundaries.
+    - Clean dark/low-ambient gap between adjacent fixtures.
+    """
+    pixels = []
+    fixture_width = count / float(num_fixtures)
+    
+    for i in range(count):
+        fix_idx = min(num_fixtures - 1, int(i / fixture_width))
+        fix_start = fix_idx * fixture_width
+        fix_center = fix_start + (fixture_width / 2.0)
+        norm_dist = abs(i - fix_center) / (fixture_width / 2.0)
+        
+        level = fixture_levels[fix_idx]
+        color = fixture_colors[fix_idx]
+        
+        # Fixture lens profile & inter-fixture gap
+        if norm_dist > (1.0 - gap_ratio):
+            gap_fade = max(0.0, 1.0 - ((norm_dist - (1.0 - gap_ratio)) / gap_ratio))
+            beam = gap_fade * 0.35
+        else:
+            beam = 1.0 - 0.35 * (norm_dist ** 2)
+            
+        effective_bri = max(0.0, min(1.0, level * beam))
+        pix_color = scale_color(color, effective_bri)
+        
+        if ambient_color and level < 0.2:
+            amb = scale_color(ambient_color, 0.05 * (1.0 - norm_dist * 0.5))
+            pix_color = (
+                min(255, pix_color[0] + amb[0]),
+                min(255, pix_color[1] + amb[1]),
+                min(255, pix_color[2] + amb[2])
+            )
+            
+        pixels.append(pix_color)
+        
+    return pixels
+
+
 class SegmentAnimationState:
     """Maintains independent animation physics and history for a single LED segment."""
 
@@ -103,6 +169,12 @@ class SegmentAnimationState:
         self.pulse_decay = 0.0
         self.peaks_history = [0.0] * self.length
         self.wave_phase = 0.0
+        # DJ Fixture Stage State (8 virtual lights)
+        self.fixture_levels = [0.0] * 8
+        self.chase_pos = 0.0
+        self.chase_dir = 1
+        self.strobe_active = 0
+        self.odd_even_toggle = 0
 
     def resize(self, length: int):
         if length != self.length:
@@ -113,11 +185,41 @@ class SegmentAnimationState:
 class VisualizerEngine:
     """Renders real-time audio features into LED strip RGB pixel frames per segment/device."""
 
-    def __init__(self, led_count: int = 60, effect_name: str = "album_pulse", palette_name: str = "album_art"):
+    def __init__(
+        self,
+        led_count: int = 60,
+        effect_name: str = "album_pulse",
+        palette_name: str = "album_art",
+        custom_palettes: Optional[Dict[str, Dict[str, Any]]] = None
+    ):
         self.led_count = max(1, led_count)
         self.effect_name = effect_name.lower()
         self.palette_name = palette_name.lower()
+        self._custom_palettes: Dict[str, Dict[str, Any]] = dict(custom_palettes or {})
         self._segment_states: Dict[str, SegmentAnimationState] = {}
+
+    def set_custom_palettes(self, palettes: Dict[str, Dict[str, Any]]) -> None:
+        """Updates the full dictionary of custom palettes."""
+        self._custom_palettes = dict(palettes)
+
+    def add_custom_palette(self, palette_id: str, name: str, colors: List[Tuple[int, int, int]]) -> None:
+        """Adds or updates a custom palette."""
+        self._custom_palettes[palette_id.lower()] = {
+            "name": name,
+            "colors": list(colors)
+        }
+
+    def remove_custom_palette(self, palette_id: str) -> None:
+        """Removes a custom palette if present."""
+        self._custom_palettes.pop(palette_id.lower(), None)
+
+    def get_custom_palettes(self) -> Dict[str, Dict[str, Any]]:
+        """Returns all configured custom palettes."""
+        return dict(self._custom_palettes)
+
+    def get_palette_definitions(self) -> List[Dict[str, Any]]:
+        """Returns all palette definitions including custom palettes."""
+        return get_palette_definitions(self._custom_palettes)
 
     def get_segment_state(self, key: str, length: int) -> SegmentAnimationState:
         """Retrieves or creates state for a given segment key."""
@@ -140,7 +242,7 @@ class VisualizerEngine:
         self.led_count = max(1, count)
 
     def get_palette(self, track_palette: Optional[List[Tuple[int, int, int]]] = None) -> List[Tuple[int, int, int]]:
-        """Returns the resolved color palette (preset or dynamic album art)."""
+        """Returns the resolved color palette (preset, custom, or dynamic album art)."""
         return self.get_palette_by_name(self.palette_name, track_palette)
 
     def get_palette_by_name(
@@ -151,6 +253,9 @@ class VisualizerEngine:
         preset = BUILTIN_PALETTES.get(p_name)
         if preset and preset["colors"]:
             return preset["colors"]
+        custom = self._custom_palettes.get(p_name)
+        if custom and custom.get("colors"):
+            return custom["colors"]
         if track_palette:
             return track_palette
         return BUILTIN_PALETTES["cyberpunk"]["colors"]
@@ -178,6 +283,14 @@ class VisualizerEngine:
             return self._render_vu_meter(features, palette, count, state)
         elif eff == "beat_flash":
             return self._render_beat_flash(features, palette, count, state)
+        elif eff == "dj_chase":
+            return self._render_dj_chase(features, palette, count, state)
+        elif eff == "dj_alternator":
+            return self._render_dj_alternator(features, palette, count, state)
+        elif eff == "dj_blinder":
+            return self._render_dj_blinder(features, palette, count, state)
+        elif eff == "dj_beams":
+            return self._render_dj_beams(features, palette, count, state)
         elif eff == "solid":
             return self._render_solid(features, palette, count, state)
         elif eff == "off":
@@ -378,6 +491,157 @@ class VisualizerEngine:
         b = min(255, base_color[2] + flash_color[2])
 
         return [(r, g, b)] * count
+
+    def _render_dj_chase(
+        self, features: AudioFeatures, palette: List[Tuple[int, int, int]], count: int, state: SegmentAnimationState
+    ) -> List[Tuple[int, int, int]]:
+        """8-fixture concert stage beam chase that bounces across virtual fixtures on each beat."""
+        num_fixtures = 8
+
+        # Advance chase position on beat or high rhythmic flux
+        if features.sample_peak:
+            state.chase_pos += state.chase_dir
+            if state.chase_pos >= num_fixtures - 1:
+                state.chase_pos = num_fixtures - 1
+                state.chase_dir = -1
+            elif state.chase_pos <= 0:
+                state.chase_pos = 0
+                state.chase_dir = 1
+            # Primary active fixture gets full blast
+            active_idx = int(state.chase_pos)
+            state.fixture_levels[active_idx] = 1.0
+
+        # Natural decay on all fixtures leaving a smooth phosphor beam trail
+        decay_rate = 0.82 if features.sample_peak == 0 else 0.90
+        for k in range(num_fixtures):
+            state.fixture_levels[k] = max(0.0, state.fixture_levels[k] * decay_rate)
+
+        # Color mapping: cycle palette across fixtures
+        fixture_colors = [palette[k % len(palette)] for k in range(num_fixtures)]
+        ambient = palette[0]
+
+        return map_to_fixtures(
+            state.fixture_levels, fixture_colors, count, num_fixtures=num_fixtures,
+            gap_ratio=0.15, ambient_color=ambient
+        )
+
+    def _render_dj_alternator(
+        self, features: AudioFeatures, palette: List[Tuple[int, int, int]], count: int, state: SegmentAnimationState
+    ) -> List[Tuple[int, int, int]]:
+        """Alternates odd vs even stage par cans on kick & snare / alternating measures."""
+        num_fixtures = 8
+
+        # On beat hit: toggle odd/even active group
+        if features.sample_peak:
+            state.odd_even_toggle = 1 - state.odd_even_toggle
+            active_parity = state.odd_even_toggle
+            # Punch active fixtures to full brightness
+            for k in range(num_fixtures):
+                if (k % 2) == active_parity:
+                    state.fixture_levels[k] = 1.0
+
+        # Smooth phosphor decay
+        for k in range(num_fixtures):
+            state.fixture_levels[k] = max(0.0, state.fixture_levels[k] * 0.85)
+
+        # Colors: Odd fixtures get palette[0], Even fixtures get palette[1] (or accent)
+        c_odd = palette[0]
+        c_even = palette[1] if len(palette) > 1 else palette[0]
+        fixture_colors = [c_odd if (k % 2 == 1) else c_even for k in range(num_fixtures)]
+        ambient = palette[0]
+
+        return map_to_fixtures(
+            state.fixture_levels, fixture_colors, count, num_fixtures=num_fixtures,
+            gap_ratio=0.15, ambient_color=ambient
+        )
+
+    def _render_dj_blinder(
+        self, features: AudioFeatures, palette: List[Tuple[int, int, int]], count: int, state: SegmentAnimationState
+    ) -> List[Tuple[int, int, int]]:
+        """High-impact stage crowd blinders with rapid drop strobes on high energy."""
+        num_fixtures = 8
+
+        # Strobe burst detection on peak energy drops
+        if features.sample_raw > 220.0 and features.sample_peak:
+            state.strobe_active = 6  # 6-frame strobe burst (~120ms)
+
+        if state.strobe_active > 0:
+            # Alternating 50Hz strobe flash
+            is_strobe_on = (state.strobe_active % 2 == 1)
+            for k in range(num_fixtures):
+                state.fixture_levels[k] = 1.0 if is_strobe_on else 0.0
+            state.strobe_active -= 1
+        elif features.sample_peak:
+            # Standard blinder hit: blast all 8 fixtures
+            for k in range(num_fixtures):
+                state.fixture_levels[k] = 1.0
+        else:
+            # Warm blinder incandescent fade curve
+            for k in range(num_fixtures):
+                state.fixture_levels[k] = max(0.0, state.fixture_levels[k] * 0.84)
+
+        # Blinder color: crisp warm white core tinted with palette accent
+        c_accent = palette[1] if len(palette) > 1 else palette[0]
+        blinder_color = (
+            min(255, int(c_accent[0] * 0.5 + 255 * 0.5)),
+            min(255, int(c_accent[1] * 0.5 + 255 * 0.5)),
+            min(255, int(c_accent[2] * 0.5 + 255 * 0.5))
+        )
+        fixture_colors = [blinder_color] * num_fixtures
+        ambient = palette[0]
+
+        return map_to_fixtures(
+            state.fixture_levels, fixture_colors, count, num_fixtures=num_fixtures,
+            gap_ratio=0.18, ambient_color=ambient
+        )
+
+    def _render_dj_beams(
+        self, features: AudioFeatures, palette: List[Tuple[int, int, int]], count: int, state: SegmentAnimationState
+    ) -> List[Tuple[int, int, int]]:
+        """8 discrete fixtures symmetrically mapped to Sub-bass, Bass, Mids, and Highs."""
+        num_fixtures = 8
+        bands = features.fft_result  # 16 frequency bands
+
+        # Symmetrical stage arrangement:
+        # Fixture 0 & 7: Sub-bass (bands 0-1) - Kick punch
+        # Fixture 1 & 6: Bass (bands 2-4) - Bassline
+        # Fixture 2 & 5: Mids (bands 5-9) - Vocals/Synths
+        # Fixture 3 & 4: Treble (bands 10-15) - Hi-hats/Air
+        sub_level = (bands[0] + bands[1]) / (2.0 * 255.0)
+        bass_level = sum(bands[2:5]) / (3.0 * 255.0)
+        mids_level = sum(bands[5:10]) / (5.0 * 255.0)
+        treble_level = sum(bands[10:16]) / (6.0 * 255.0)
+
+        target_levels = [
+            sub_level, bass_level, mids_level, treble_level,
+            treble_level, mids_level, bass_level, sub_level
+        ]
+
+        for k in range(num_fixtures):
+            target = target_levels[k]
+            # Fast attack, smooth decay
+            if target > state.fixture_levels[k]:
+                state.fixture_levels[k] = (state.fixture_levels[k] * 0.3) + (target * 0.7)
+            else:
+                state.fixture_levels[k] = max(0.0, state.fixture_levels[k] * 0.86)
+
+        # Colors: Palette distributed across frequency zones
+        num_pal = len(palette)
+        c_sub = palette[0]
+        c_bass = palette[1 % num_pal]
+        c_mids = palette[2 % num_pal] if num_pal > 2 else palette[1 % num_pal]
+        c_high = palette[3 % num_pal] if num_pal > 3 else (255, 255, 255)
+
+        fixture_colors = [
+            c_sub, c_bass, c_mids, c_high,
+            c_high, c_mids, c_bass, c_sub
+        ]
+        ambient = palette[0]
+
+        return map_to_fixtures(
+            state.fixture_levels, fixture_colors, count, num_fixtures=num_fixtures,
+            gap_ratio=0.14, ambient_color=ambient
+        )
 
     def _render_solid(
         self, features: AudioFeatures, palette: List[Tuple[int, int, int]], count: int, state: SegmentAnimationState

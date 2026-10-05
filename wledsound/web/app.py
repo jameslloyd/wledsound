@@ -85,6 +85,32 @@ def create_web_app(coordinator: Any) -> FastAPI:
         success = await coordinator.sync_palette_to_wled()
         return {"status": "ok" if success else "error"}
 
+    @app.post("/api/wled/restore-defaults")
+    async def restore_wled_defaults():
+        await coordinator.restore_wled_defaults()
+        return {"status": "ok"}
+
+    @app.get("/api/wled/palettes")
+    async def get_palettes():
+        return {"palettes": coordinator.visualizer.get_palette_definitions()}
+
+    @app.post("/api/wled/palettes/custom")
+    async def create_custom_palette(request: Request):
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        name = payload.get("name", "Custom Palette")
+        colors = payload.get("colors", [])
+        palette_id = payload.get("id")
+        created = coordinator.save_custom_palette(name=name, colors=colors, palette_id=palette_id)
+        return {"status": "ok", "palette": created}
+
+    @app.delete("/api/wled/palettes/custom/{palette_id}")
+    async def delete_custom_palette(palette_id: str):
+        success = coordinator.delete_custom_palette(palette_id)
+        return {"status": "ok" if success else "error"}
+
     @app.post("/api/wled/palette/{palette_id}")
     async def set_palette(palette_id: str):
         coordinator.set_palette(palette_id)

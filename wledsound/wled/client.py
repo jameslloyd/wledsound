@@ -19,6 +19,7 @@ class WLEDClient:
         self.base_url = f"http://{self.host}"
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: Optional[aiohttp.ClientSession] = None
+        self._saved_state: Optional[Dict[str, Any]] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -35,6 +36,16 @@ class WLEDClient:
         except Exception as e:
             logger.debug(f"Failed to fetch state from WLED ({self.host}): {e}")
         return None
+
+    async def capture_state(self) -> Optional[Dict[str, Any]]:
+        """Captures and stores pre-sync WLED state if not already saved."""
+        state = await self.get_state()
+        if state:
+            # Only save as default baseline if not already in external live override mode
+            if self._saved_state is None or (state.get("lor", 0) == 0 and not state.get("live", False)):
+                self._saved_state = state
+                logger.info(f"Captured baseline state for WLED {self.host} (preset={state.get('ps', -1)})")
+        return self._saved_state
 
     async def get_info(self) -> Optional[Dict[str, Any]]:
         """Fetches WLED device info (LED count, version, name)."""
@@ -108,6 +119,36 @@ class WLEDClient:
     async def set_preset(self, preset_id: int) -> bool:
         """Loads a WLED preset by ID."""
         return await self._post_state({"ps": preset_id})
+
+    async def release_realtime(self) -> bool:
+        """Explicitly releases WLED realtime mode (DDP/UDP/E1.31) returning control to local state."""
+        return await self._post_state({"live": False, "lor": 0})
+
+    async def restore_default_state(self, default_preset: Optional[int] = None) -> bool:
+        """Releases live streaming and restores the device to its default preset or pre-sync state."""
+        payload: Dict[str, Any] = {"live": False, "lor": 0}
+
+        if default_preset is not None and default_preset > 0:
+            payload["ps"] = default_preset
+            logger.info(f"Restoring WLED ({self.host}) to configured default preset {default_preset}")
+        elif self._saved_state:
+            saved_preset = self._saved_state.get("ps", -1)
+            if saved_preset > 0:
+                payload["ps"] = saved_preset
+                logger.info(f"Restoring WLED ({self.host}) to pre-sync preset {saved_preset}")
+            else:
+                if "on" in self._saved_state:
+                    payload["on"] = self._saved_state["on"]
+                if "bri" in self._saved_state:
+                    payload["bri"] = self._saved_state["bri"]
+                if "seg" in self._saved_state and isinstance(self._saved_state["seg"], list):
+                    # Restore saved segment configurations (fx, col, etc.)
+                    payload["seg"] = self._saved_state["seg"]
+                logger.info(f"Restoring WLED ({self.host}) to pre-sync baseline state")
+        else:
+            logger.info(f"Releasing realtime stream on WLED ({self.host})")
+
+        return await self._post_state(payload)
 
     async def detect_device_config(self) -> Optional[Dict[str, Any]]:
         """Queries WLED device to auto-discover name, led count, and segments."""

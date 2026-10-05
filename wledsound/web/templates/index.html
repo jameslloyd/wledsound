@@ -183,14 +183,27 @@
             <button type="button" class="seg-btn effect-btn" data-effect="energy_wave" id="btnEffectWave">Energy Wave</button>
             <button type="button" class="seg-btn effect-btn" data-effect="vu_meter" id="btnEffectVu">VU Meter</button>
             <button type="button" class="seg-btn effect-btn" data-effect="beat_flash" id="btnEffectFlash">Beat Drop Flash</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="dj_chase" id="btnEffectDjChase">DJ Beat Chase</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="dj_alternator" id="btnEffectDjAlternator">DJ Odd/Even Wash</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="dj_blinder" id="btnEffectDjBlinder">DJ Strobe &amp; Blinder</button>
+            <button type="button" class="seg-btn effect-btn" data-effect="dj_beams" id="btnEffectDjBeams">DJ Frequency Beams</button>
           </div>
         </div>
 
         <!-- Color Palette Selection -->
         <div class="control-group" style="margin-top: 16px;">
           <div class="control-header">
-            <span class="control-label">Color Palette (DDP & Ambient WLED)</span>
-            <span class="control-val" id="activePaletteLabel">Album Cover (Auto)</span>
+            <div>
+              <span class="control-label">Color Palette (DDP &amp; Ambient WLED)</span>
+              <div class="control-sublabel">Concert presets, dynamic album artwork, and custom user palettes</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="control-val" id="activePaletteLabel">Album Cover (Auto)</span>
+              <button type="button" class="btn btn-outline btn-xs" id="btnOpenNewPaletteModal" title="Create a new custom color palette">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                + New Palette
+              </button>
+            </div>
           </div>
           <div class="palette-grid" id="paletteGrid" role="group" aria-label="Color Palette Selection">
             <button type="button" class="palette-card active" data-palette="album_art" id="btnPaletteAlbumArt">
@@ -232,6 +245,10 @@
             <button type="button" class="palette-card" data-palette="candle" id="btnPaletteCandle">
               <div class="palette-card-name">Warm Candle</div>
               <div class="palette-card-bar" style="background: linear-gradient(90deg, #ff821e, #ffb946, #dc5014, #ffdc8c);"></div>
+            </button>
+            <button type="button" class="palette-card palette-card-add" id="btnPaletteAddCard" title="Create a new custom palette">
+              <div class="palette-card-name" style="color: var(--color-primary); font-weight: 700;">+ Custom</div>
+              <div class="palette-card-bar" style="background: dashed 1px var(--color-primary); display: flex; align-items: center; justify-content: center; opacity: 0.7;"></div>
             </button>
           </div>
         </div>
@@ -313,6 +330,12 @@
               </svg>
               <span id="actionSyncText">Pause Sync</span>
             </button>
+            <button type="button" class="btn btn-outline" id="btnRestoreDefaults" title="Immediately release realtime DDP streaming and restore lights to default state">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+              </svg>
+              Restore Defaults
+            </button>
             <button type="button" class="btn btn-outline" id="btnTestFlash">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M7 2v11h3v9l7-12h-4l4-8z"/>
@@ -333,6 +356,27 @@
             </button>
           </div>
         </div>
+
+        <!-- Disconnect / Default State Setting -->
+        <div class="control-group" style="margin-top: 16px;">
+          <div class="control-header">
+            <div>
+              <span class="control-label">Disconnect &amp; Idle Behavior</span>
+              <div class="control-sublabel">State restored when LED sync is toggled off or stopped</div>
+            </div>
+          </div>
+          <div class="disconnect-setting-row">
+            <select id="selectDisconnectPreset" class="form-select disconnect-select" aria-label="Default State on Disconnect">
+              <option value="none">Auto Restore (Pre-Sync Baseline / Preset)</option>
+              <option value="1">WLED Preset 1</option>
+              <option value="2">WLED Preset 2</option>
+              <option value="3">WLED Preset 3</option>
+              <option value="4">WLED Preset 4</option>
+              <option value="custom">Specific Preset ID...</option>
+            </select>
+            <input type="number" id="inputCustomDisconnectPreset" class="form-input disconnect-preset-input" placeholder="Preset #" min="1" max="250" style="display: none; width: 90px;" />
+          </div>
+        </div>
       </aside>
     </main>
 
@@ -340,6 +384,65 @@
     <footer class="app-footer">
       <p>WLEDSound Service &bull; High Performance Audio Synchronization &bull; Open Home Foundation Compatible</p>
     </footer>
+  </div>
+
+  <!-- Custom Palette Creator Modal -->
+  <div class="modal-backdrop" id="customPaletteModal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-dialog glass-card">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTitle">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="color: var(--color-primary); margin-right: 6px;">
+            <path d="M12 3c-4.97 0-9 4.03-9 9 0 2.12.74 4.07 1.97 5.61L4.35 19.4c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l1.9-1.9C9.22 19.57 10.56 20 12 20c4.97 0 9-4.03 9-9s-4.03-9-9-9zm0 15c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z"/>
+          </svg>
+          Create Custom Palette
+        </h3>
+        <button type="button" class="modal-close" id="btnClosePaletteModal" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="inputPaletteName" class="form-label">Palette Name</label>
+          <input type="text" id="inputPaletteName" class="form-input" placeholder="e.g. Acid Neon, Deep Cyber" maxlength="32" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Live Gradient Preview</label>
+          <div class="modal-gradient-preview" id="modalGradientPreview"></div>
+        </div>
+
+        <div class="form-group">
+          <div class="form-header-inline">
+            <label class="form-label">Color Stops (2 &ndash; 6 colors)</label>
+            <button type="button" class="btn btn-outline btn-xs" id="btnAddColorStop">+ Add Color</button>
+          </div>
+          <div class="color-stops-list" id="colorStopsList">
+            <!-- Dynamic color stop rows -->
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Quick Inspirations</label>
+          <div class="inspiration-chips" id="inspirationChips">
+            <button type="button" class="chip-seed" data-name="Miami Vice" data-colors="#ff007f,#00f0ff,#ffe600">Miami Vice</button>
+            <button type="button" class="chip-seed" data-name="Cyber Synth" data-colors="#7b00ff,#00ffcc,#ff0055">Cyber Synth</button>
+            <button type="button" class="chip-seed" data-name="Solar Flare" data-colors="#ff3300,#ff9900,#ffff00">Solar Flare</button>
+            <button type="button" class="chip-seed" data-name="Ocean Depths" data-colors="#00ff88,#00bbee,#110066">Ocean Depths</button>
+            <button type="button" class="chip-seed" data-name="Electric Violet" data-colors="#ff00cc,#3333ff,#00ffea">Electric Violet</button>
+          </div>
+        </div>
+
+        <div class="form-group-checkbox">
+          <label class="checkbox-container">
+            <input type="checkbox" id="chkApplyImmediately" checked />
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-text">Set as active master color palette immediately</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" id="btnCancelPaletteModal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btnSaveCustomPalette">Save Palette</button>
+      </div>
+    </div>
   </div>
 
   <script src="/static/js/app.js"></script>

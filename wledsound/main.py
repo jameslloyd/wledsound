@@ -78,10 +78,15 @@ class ServiceCoordinator:
             targets=self.config.wled.ddp_targets,
             port=self.config.wled.ddp_port
         )
+        custom_palettes_dict = {
+            cp.id: {"name": cp.name, "colors": cp.colors}
+            for cp in self.config.wled.custom_palettes
+        }
         self.visualizer = VisualizerEngine(
             led_count=self.config.wled.led_count,
             effect_name=self.config.wled.ddp_effect,
-            palette_name=self.config.wled.palette
+            palette_name=self.config.wled.palette,
+            custom_palettes=custom_palettes_dict
         )
         # WLED HTTP Clients (all devices + wled_hosts)
         self.wled_clients: Dict[str, WLEDClient] = {}
@@ -159,7 +164,7 @@ class ServiceCoordinator:
             "wled_mode": self.config.wled.mode,
             "palette_mode": self.visualizer.palette_name,
             "active_palette": [list(c) for c in active_palette],
-            "available_palettes": get_palette_definitions(),
+            "available_palettes": self.visualizer.get_palette_definitions(),
             "available_effects": AVAILABLE_EFFECTS,
             "devices": [d.model_dump() for d in self.config.wled.devices],
             "track": {
@@ -488,7 +493,118 @@ class ServiceCoordinator:
         logger.info(f"LED synchronization is now: {'ENABLED' if self.config.wled.sync_enabled else 'PAUSED/OFF'}")
         save_config(self.config, self.config_path)
         self._broadcast_frame(self.get_telemetry_frame())
+
+        # If sync disabled/disconnected, release live streaming and restore lights to default state
+        if not self.config.wled.sync_enabled:
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.restore_wled_defaults(), self._loop)
+        else:
+            # When re-enabling sync, re-sync palette to WLED if enabled
+            if self.config.wled.sync_album_art_colors and self.wled_clients:
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(self.sync_palette_to_wled(), self._loop)
+
         return self.config.wled.sync_enabled
+
+    async def restore_wled_defaults(self) -> None:
+        """Stops live streaming and returns all WLED devices to their default/pre-sync state."""
+        if not self.wled_clients:
+            return
+        logger.info(f"Restoring {len(self.wled_clients)} WLED device(s) to default state...")
+        tasks = [
+            client.restore_default_state(default_preset=self.config.wled.default_preset)
+            for client in self.wled_clients.values()
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def save_custom_palette(
+        self,
+        name: str,
+        colors: List[Any],
+        palette_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Saves a custom color palette, registers it, updates config, and broadcasts."""
+        import re
+        from .config import CustomPaletteConfig
+
+        raw_name = (name or "Custom Palette").strip()
+        if not palette_id:
+            slug = re.sub(r"[^a-z0-9]+", "_", raw_name.lower()).strip("_")
+            palette_id = f"custom_{slug}" if slug else f"custom_{int(time.time())}"
+        else:
+            palette_id = re.sub(r"[^a-z0-9_]+", "", palette_id.lower())
+
+        rgb_colors: List[Tuple[int, int, int]] = []
+        for c in colors:
+            if isinstance(c, (list, tuple)) and len(c) >= 3:
+                rgb_colors.append((
+                    max(0, min(255, int(c[0]))),
+                    max(0, min(255, int(c[1]))),
+                    max(0, min(255, int(c[2])))
+                ))
+            elif isinstance(c, str):
+                hex_str = c.lstrip("#")
+                if len(hex_str) == 6:
+                    try:
+                        r = int(hex_str[0:2], 16)
+                        g = int(hex_str[2:4], 16)
+                        b = int(hex_str[4:6], 16)
+                        rgb_colors.append((r, g, b))
+                    except ValueError:
+                        pass
+
+        if len(rgb_colors) < 2:
+            rgb_colors = [(255, 0, 128), (0, 240, 255)]
+
+        # Find existing or append
+        existing = next((cp for cp in self.config.wled.custom_palettes if cp.id == palette_id), None)
+        if existing:
+            existing.name = raw_name
+            existing.colors = rgb_colors
+        else:
+            self.config.wled.custom_palettes.append(
+                CustomPaletteConfig(id=palette_id, name=raw_name, colors=rgb_colors)
+            )
+
+        self.visualizer.add_custom_palette(palette_id, raw_name, rgb_colors)
+        save_config(self.config, self.config_path)
+        logger.info(f"Saved custom palette '{raw_name}' ({palette_id}) with {len(rgb_colors)} colors")
+
+        self._broadcast_frame(self.get_telemetry_frame())
+        return {
+            "id": palette_id,
+            "name": raw_name,
+            "hex_colors": [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in rgb_colors],
+            "is_custom": True,
+            "is_dynamic": False
+        }
+
+    def delete_custom_palette(self, palette_id: str) -> bool:
+        """Deletes a custom color palette, reverts to album_art if active, and saves config."""
+        palette_id = palette_id.lower()
+        initial_count = len(self.config.wled.custom_palettes)
+        self.config.wled.custom_palettes = [
+            cp for cp in self.config.wled.custom_palettes if cp.id != palette_id
+        ]
+        if len(self.config.wled.custom_palettes) == initial_count:
+            return False
+
+        self.visualizer.remove_custom_palette(palette_id)
+
+        # If current master palette is this deleted palette, switch to album_art
+        if self.config.wled.palette == palette_id:
+            self.set_palette("album_art")
+
+        # Revert any segment using this custom palette
+        for dev in self.config.wled.devices:
+            for seg in dev.segments:
+                if seg.palette == palette_id:
+                    seg.palette = None
+
+        save_config(self.config, self.config_path)
+        logger.info(f"Deleted custom palette: {palette_id}")
+        self._broadcast_frame(self.get_telemetry_frame())
+        return True
 
     def get_status(self) -> Dict[str, Any]:
         """Returns comprehensive status dictionary."""
@@ -509,9 +625,11 @@ class ServiceCoordinator:
                 "led_count": self.config.wled.led_count,
                 "effect": self.config.wled.ddp_effect,
                 "palette": self.config.wled.palette,
+                "default_preset": self.config.wled.default_preset,
+                "custom_palettes": [cp.model_dump() for cp in self.config.wled.custom_palettes],
                 "devices": [d.model_dump() for d in self.config.wled.devices],
                 "available_effects": AVAILABLE_EFFECTS,
-                "available_palettes": get_palette_definitions()
+                "available_palettes": self.visualizer.get_palette_definitions()
             },
             "music_assistant": {
                 "enabled": self.config.music_assistant.enabled,
@@ -527,6 +645,10 @@ class ServiceCoordinator:
         """Starts all components."""
         self._running = True
         self._loop = asyncio.get_running_loop()
+
+        # Capture baseline states of connected WLED devices for clean disconnect restoration
+        for client in self.wled_clients.values():
+            asyncio.create_task(client.capture_state())
 
         # Start Audio Ingestion
         self.capture.start(self._on_audio_chunk)
@@ -550,8 +672,10 @@ class ServiceCoordinator:
             await self.mass_client.stop()
         self.audiosync.close()
         self.ddp.close()
-        if self.wled_client:
-            await self.wled_client.close()
+        # Restore lights to default state on shutdown
+        await self.restore_wled_defaults()
+        for client in self.wled_clients.values():
+            await client.close()
         logger.info("WLEDSound stopped cleanly")
 
 

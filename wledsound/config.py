@@ -3,7 +3,7 @@
 import os
 import yaml
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,12 @@ class WLEDSegmentConfig(BaseModel):
     mirror: bool = Field(default=False, description="Mirror animation from segment center")
     brightness: float = Field(default=1.0, description="Relative segment brightness multiplier (0.0 - 1.0)")
     palette: Optional[str] = Field(default=None, description="Optional custom palette override, or None to inherit master")
+
+
+class CustomPaletteConfig(BaseModel):
+    id: str = Field(description="Unique palette identifier slug")
+    name: str = Field(description="Display name")
+    colors: List[Tuple[int, int, int]] = Field(description="List of (R, G, B) color tuples (0-255)")
 
 
 class WLEDDeviceConfig(BaseModel):
@@ -79,6 +85,14 @@ class WLEDSettings(BaseModel):
     auto_power: bool = Field(default=True, description="Turn WLED on when music plays, turn off/idle when paused")
     sync_album_art_colors: bool = Field(default=True, description="Push album art palette to WLED segment colors")
     palette: str = Field(default="album_art", description="Color palette: 'album_art', 'cyberpunk', 'sunset', 'vaporwave', 'aurora', 'magma', 'forest', 'glacial', 'rainbow', 'candle'")
+    custom_palettes: List[CustomPaletteConfig] = Field(
+        default_factory=list,
+        description="User-defined custom color palettes"
+    )
+    default_preset: Optional[int] = Field(
+        default=None,
+        description="WLED preset ID to activate when LED sync is disconnected/disabled (or None to restore pre-sync state)"
+    )
     devices: List[WLEDDeviceConfig] = Field(
         default_factory=list,
         description="Per-device configurations with individual segment definitions and effects"
